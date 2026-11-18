@@ -1,20 +1,20 @@
-// Project-agnostic issue triage for the Orca-driven loop.
-// Matt's five triage labels are the authoritative taxonomy. The cheap-model
-// verdict is advisory only and never overrides those labels.
+// Read all open issues and open PRs, then write a deterministic triage report.
+// This command is read-only: it does not label, comment, close, or assign.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import {
   MATT_ROLES,
   ineligibleReason,
+  isMain,
   labelNames,
   linkedPrNumbers,
   listOpenIssues,
   listOpenPrs,
   parseArgs,
   parsePolicy,
-  repoSlug,
+  resolveRepo,
   resolveSelfLogin,
+  resolveSettings,
   resolveToken,
   roleOf,
   selectCandidate,
@@ -27,7 +27,7 @@ async function classify(base, key, model, issues) {
     'One line per issue, exactly: number|verdict|reason',
     'verdict is one of do|reply|review|ignore.',
     'do=worth implementing, reply=just answer, review=needs a human or PR review, ignore=skip.',
-    'The repository already uses Matt Pocock triage labels. Those labels are authoritative;',
+    'The repository already uses the five triage labels. Those labels are authoritative;',
     'use them as a strong signal, and never repeat the label text as the reason.',
   ].join('\n');
   const items = issues
@@ -58,10 +58,18 @@ async function classify(base, key, model, issues) {
   return verdicts;
 }
 
-export async function collect({ policy = parsePolicy(), repo, token, selfLogin = '', ttlMinutes, useLlm = true } = {}) {
-  const slug = repo || process.env.GITHUB_REPOSITORY || repoSlug();
-  if (!slug) throw new Error('无法解析仓库: 设置 GITHUB_REPOSITORY 或在 git 仓库内运行');
-  if (!token) throw new Error('没有 GitHub token: 设置 GITHUB_TOKEN / GH_TOKEN,或先 gh auth login');
+export async function collect({
+  policy = parsePolicy(),
+  repoRoot,
+  githubRepo = '',
+  token,
+  selfLogin = '',
+  ttlMinutes,
+  useLlm = true,
+} = {}) {
+  const slug = githubRepo || process.env.GITHUB_REPOSITORY || '';
+  if (!slug) throw new Error('cannot resolve GitHub repo: set githubRepo/.self-loop.json or GITHUB_REPOSITORY');
+  if (!token) throw new Error('no GitHub token: set GITHUB_TOKEN / GH_TOKEN, or run gh auth login');
 
   const [rawIssues, prs] = await Promise.all([listOpenIssues(slug, token), listOpenPrs(slug, token)]);
   const prLinks = linkedPrNumbers(prs);
@@ -139,38 +147,45 @@ function renderMarkdown(state) {
       } |`,
     );
   }
-  lines.push('', `Matt 角色集合: ${MATT_ROLES.join(' / ')}`);
-  lines.push('', '> triage 只读: 不评论、不打标签、不关 issue。动作由 Orca 策略与 agent 按 loop/LOOP.md 决定。');
+  lines.push('', `Triage roles: ${MATT_ROLES.join(' / ')}`);
+  lines.push('', '> Triage is read-only. Selection and implementation follow the supplied policy and work reference.');
   return lines.join('\n');
 }
 
 async function main() {
-  const { values } = parseArgs(process.argv.slice(2));
-  const policy = parsePolicy(values.policy || process.env.LOOP_POLICY || 'ready-for-agent');
+  const { values, flags } = parseArgs(process.argv.slice(2));
+  const repoRoot = resolveRepo({ repo: values.repo });
+  const settings = resolveSettings(repoRoot, {
+    policy: values.policy,
+    claimTtlMinutes: values.ttl,
+    outDir: values.out,
+  });
+  const policy = parsePolicy(settings.policy);
   const token = resolveToken();
-  const repo = values.repo || process.env.GITHUB_REPOSITORY || repoSlug();
-  const outDir = values.out || '.loop';
-  mkdirSync(outDir, { recursive: true });
+  if (!settings.githubRepo) {
+    throw new Error('cannot resolve GitHub repo: set githubRepo in .self-loop.json or GITHUB_REPOSITORY');
+  }
 
-  const selfLogin = values['no-self'] ? '' : await resolveSelfLogin(repo, token);
+  mkdirSync(settings.outDir, { recursive: true });
+  const selfLogin = flags['no-self'] ? '' : await resolveSelfLogin(settings.githubRepo, token);
   const state = await collect({
     policy,
-    repo,
+    repoRoot,
+    githubRepo: settings.githubRepo,
     token,
     selfLogin,
-    ttlMinutes: values.ttl ? Number(values.ttl) : undefined,
-    useLlm: !values['no-llm'],
+    ttlMinutes: settings.claimTtlMinutes,
+    useLlm: !flags['no-llm'],
   });
   state.selfLogin = selfLogin;
 
-  writeFileSync(join(outDir, 'triage.json'), `${JSON.stringify(state, null, 2)}\n`);
-  writeFileSync(join(outDir, 'triage.md'), `${renderMarkdown(state)}\n`);
+  writeFileSync(join(settings.outDir, 'triage.json'), `${JSON.stringify(state, null, 2)}\n`);
+  writeFileSync(join(settings.outDir, 'triage.md'), `${renderMarkdown(state)}\n`);
   console.log(`[triage] ${state.openIssues} open issues, ${state.openPrs} open PRs, candidate: ${state.candidate || 'none'}`);
-  console.log(`[triage] wrote ${join(outDir, 'triage.json')} and ${join(outDir, 'triage.md')}`);
+  console.log(`[triage] wrote ${join(settings.outDir, 'triage.json')} and ${join(settings.outDir, 'triage.md')}`);
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     console.error(`[triage] ${error.message}`);
     process.exit(2);
