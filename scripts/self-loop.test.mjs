@@ -356,6 +356,8 @@ test('Orca adapter prompts call the installed skill scripts, not loop/run.mjs', 
   });
   assert.match(prompt, /scripts[\\/]run\.mjs/);
   assert.match(prompt, /\.loop[\\/]work\.json/);
+  assert.match(prompt, /--repo \./);
+  assert.doesNotMatch(prompt, /--repo "\/work\/project"/);
   assert.doesNotMatch(prompt, /node loop\/run\.mjs/);
 });
 

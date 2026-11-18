@@ -150,7 +150,7 @@ node "$SKILL_DIR/adapters/orca/setup.mjs" \
 ```
 
 适配器生成的 prompt 调用已安装 skill 的绝对脚本路径，例如
-`node ".../self-loop/scripts/run.mjs" triage --repo ".../project"`，不会调用 `node loop/run.mjs`。移动 skill 后重跑 `setup.mjs --replace`。详见 `adapters/orca/README.md`。
+`node ".../self-loop/scripts/run.mjs" triage --repo .`，在 Orca 为本次运行启动的 worktree 内执行；不会调用 `node loop/run.mjs`。移动 skill 后重跑 `setup.mjs --replace`。详见 `adapters/orca/README.md`。
 
 自动化名称按仓库生成：`<owner>-<repo>-issue-loop` 和
 `<owner>-<repo>-retro-loop`，因此不同仓库不会互相覆盖。旧版固定名称

@@ -26,14 +26,15 @@ not collide. If an older `issue-loop` or `retro-loop` automation exists, rerun
 with `--replace` to rename it instead of creating a duplicate.
 
 The generated prompt calls the installed skill's
-`scripts/run.mjs` with an explicit `--repo`, for example:
+`scripts/run.mjs` with `--repo .`, so it targets the worktree Orca starts for
+the run (including `new_per_run` worktrees):
 
 ```text
-node "/skills/self-loop/scripts/run.mjs" triage --repo "/work/project"
+node "/skills/self-loop/scripts/run.mjs" triage --repo .
 ```
 
-There is no project-local `loop/` directory. If you move the installed skill,
-rerun `setup.mjs --replace` so prompts and the precheck keep valid paths.
+The project still needs no `loop/` directory. If you move the installed skill,
+rerun `setup.mjs --replace` so prompts and the precheck keep valid script paths.
 
 ## Commands
 
