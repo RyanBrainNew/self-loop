@@ -27,6 +27,7 @@ import {
 } from './lib.mjs';
 import { resolveWindow } from './retro.mjs';
 import { initMemory } from './init-memory.mjs';
+import { githubStatusReachable } from './precheck.mjs';
 import { automationNamesForRepo, buildIssuePrompt } from '../adapters/orca/setup.mjs';
 
 const now = Date.parse('2026-11-13T08:00:00Z');
@@ -371,4 +372,14 @@ test('Orca automation names are sanitized and repository-specific', () => {
   const second = automationNamesForRepo('/work/b/app', 'other/app');
   assert.notEqual(first.issue, second.issue);
   assert.match(first.issue, /^[a-z0-9._-]+$/);
+});
+
+test('GitHub precheck treats auth and rate-limit responses as reachable', () => {
+  assert.equal(githubStatusReachable(200), true);
+  assert.equal(githubStatusReachable(401), true);
+  assert.equal(githubStatusReachable(403), true);
+  assert.equal(githubStatusReachable(404), true);
+  assert.equal(githubStatusReachable(500), false);
+  assert.equal(githubStatusReachable(503), false);
+  assert.equal(githubStatusReachable(0), false);
 });

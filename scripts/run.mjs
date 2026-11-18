@@ -9,6 +9,7 @@ import {
   resolveRepo,
   resolveSettings,
 } from './lib.mjs';
+import { githubReachable } from './precheck.mjs';
 
 const scriptDir = fileURLToPath(new URL('.', import.meta.url));
 const skillRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -38,27 +39,18 @@ function runScript(script, args = shared) {
   return result.status ?? 2;
 }
 
-async function githubUp() {
-  try {
-    const res = await fetch('https://api.github.com', { signal: AbortSignal.timeout(10000) });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 async function main() {
   const precheck = !flags['no-precheck'];
   if (mode === 'triage') {
-    if (precheck && !(await githubUp())) return console.log('[self-loop] GitHub unreachable, skip triage'), 0;
+    if (precheck && !(await githubReachable())) return console.log('[self-loop] GitHub unreachable, skip triage'), 0;
     return runScript('triage.mjs');
   }
   if (mode === 'select' || mode === 'work') {
-    if (precheck && !(await githubUp())) return console.log('[self-loop] GitHub unreachable, skip select'), 0;
+    if (precheck && !(await githubReachable())) return console.log('[self-loop] GitHub unreachable, skip select'), 0;
     return runScript('select.mjs');
   }
   if (mode === 'issue') {
-    if (precheck && !(await githubUp())) return console.log('[self-loop] GitHub unreachable, skip issue loop'), 0;
+    if (precheck && !(await githubReachable())) return console.log('[self-loop] GitHub unreachable, skip issue loop'), 0;
     const triage = runScript('triage.mjs');
     if (triage !== 0) return triage;
     return runScript('select.mjs');
@@ -69,7 +61,7 @@ async function main() {
     return runScript('retro.mjs', args);
   }
   if (mode === 'agent') {
-    if (precheck && !(await githubUp())) return console.log('[self-loop] GitHub unreachable, skip agent dispatch'), 0;
+    if (precheck && !(await githubReachable())) return console.log('[self-loop] GitHub unreachable, skip agent dispatch'), 0;
     const selected = runScript('select.mjs', [...shared, '--json']);
     if (selected !== 0) return selected;
     const workFile = join(settings.outDir, 'work.json');
