@@ -16,9 +16,14 @@ node /absolute/path/to/self-loop/adapters/orca/setup.mjs \
 
 It creates:
 
-- `issue-loop`, hourly by default;
-- `retro-loop`, daily at 06:30 by default;
+- `<owner>-<repo>-issue-loop`, hourly by default;
+- `<owner>-<repo>-retro-loop`, daily at 06:30 by default;
 - disabled by default so you can inspect one manual run first.
+
+Names are derived from the target repository's GitHub slug, sanitized to
+lowercase `[a-z0-9._-]`. Two projects with the same directory name therefore do
+not collide. If an older `issue-loop` or `retro-loop` automation exists, rerun
+with `--replace` to rename it instead of creating a duplicate.
 
 The generated prompt calls the installed skill's
 `scripts/run.mjs` with an explicit `--repo`, for example:

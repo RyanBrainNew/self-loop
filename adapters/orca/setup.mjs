@@ -6,8 +6,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain, parseArgs, repoSlug, resolveRepo, resolveSettings } from '../../scripts/lib.mjs';
 
-const ISSUE_NAME = 'issue-loop';
-const RETRO_NAME = 'retro-loop';
+const LEGACY_ISSUE_NAME = 'issue-loop';
+const LEGACY_RETRO_NAME = 'retro-loop';
 const skillRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 function displayPath(path) {
@@ -16,6 +16,25 @@ function displayPath(path) {
 
 function quote(value) {
   return `"${displayPath(value).replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Build repository-specific automation names. Using owner and repository keeps
+ * two projects with the same leaf name from colliding in one Orca instance.
+ */
+export function automationNamesForRepo(repoPath, slug = repoSlug(repoPath)) {
+  const identity = String(slug || basename(repoPath) || 'repo');
+  const parts = identity.split('/').filter(Boolean);
+  const leaf = parts.length > 1 ? parts.slice(-2).join('-') : parts[0];
+  const base = leaf
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-._]+|[-._]+$/g, '') || 'repo';
+  return {
+    issue: `${base}-issue-loop`,
+    retro: `${base}-retro-loop`,
+  };
 }
 
 export function buildIssuePrompt({ name, policy, repoPath, outDir = join(repoPath, '.loop') }) {
@@ -72,8 +91,8 @@ function automationNames() {
 function createOrEdit({ existing, name, trigger, prompt, provider, repo, timezone, disabled, dryRun }) {
   const verb = existing ? 'edit' : 'create';
   const args = existing ? ['automations', 'edit', existing.id] : ['automations', 'create'];
+  args.push('--name', name);
   if (!existing) {
-    args.push('--name', name);
     args.push('--repo', `path:${repo}`);
     args.push('--provider', provider);
   }
@@ -103,6 +122,7 @@ function main() {
 
   const slug = repoSlug(repoPath) || repoPath;
   const name = values.name || basename(repoPath);
+  const automationNames = automationNamesForRepo(repoPath);
   const repo = dryRun ? { id: 'dry-run' } : findRepo(repoPath);
   if (!repo && !dryRun) {
     console.error(`[orca-setup] ${repoPath} is not in Orca's repo list. Add it in Orca first.`);
@@ -111,15 +131,17 @@ function main() {
 
   const existing = dryRun ? new Map() : automationNames();
   const replace = flags.replace;
-  const issueExisting = existing.get(ISSUE_NAME);
-  const retroExisting = existing.get(RETRO_NAME);
+  const issueExisting = existing.get(automationNames.issue) || existing.get(LEGACY_ISSUE_NAME);
+  const retroExisting = existing.get(automationNames.retro) || existing.get(LEGACY_RETRO_NAME);
 
   if (issueExisting && !replace) {
-    console.log(`[orca-setup] ${ISSUE_NAME} exists (${issueExisting.id}); skipped. Use --replace to update.`);
+    console.log(
+      `[orca-setup] ${issueExisting.name} exists (${issueExisting.id}); skipped. Use --replace to rename/update to ${automationNames.issue}.`,
+    );
   } else {
     createOrEdit({
       existing: issueExisting,
-      name: ISSUE_NAME,
+      name: automationNames.issue,
       trigger: issueTrigger,
       prompt: buildIssuePrompt({ name, policy, repoPath, outDir: settings.outDir }),
       provider,
@@ -131,11 +153,13 @@ function main() {
   }
 
   if (retroExisting && !replace) {
-    console.log(`[orca-setup] ${RETRO_NAME} exists (${retroExisting.id}); skipped. Use --replace to update.`);
+    console.log(
+      `[orca-setup] ${retroExisting.name} exists (${retroExisting.id}); skipped. Use --replace to rename/update to ${automationNames.retro}.`,
+    );
   } else {
     createOrEdit({
       existing: retroExisting,
-      name: RETRO_NAME,
+      name: automationNames.retro,
       trigger: retroTrigger,
       prompt: buildRetroPrompt({ name, repoPath }),
       provider,
@@ -149,8 +173,8 @@ function main() {
   console.log('');
   console.log(`[orca-setup] skill: ${skillRoot}`);
   console.log(`[orca-setup] repo: ${slug}`);
-  console.log(`[orca-setup] issue-loop: ${issueTrigger} (policy: ${policy})`);
-  console.log(`[orca-setup] retro-loop: ${retroTrigger}`);
+  console.log(`[orca-setup] ${automationNames.issue}: ${issueTrigger} (policy: ${policy})`);
+  console.log(`[orca-setup] ${automationNames.retro}: ${retroTrigger}`);
   console.log(`[orca-setup] disabled: ${disabled}${disabled ? ' (run once manually before enabling)' : ''}`);
   if (disabled) {
     console.log('[orca-setup] enable: orca automations edit <id> --enabled --json');

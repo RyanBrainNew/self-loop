@@ -27,7 +27,7 @@ import {
 } from './lib.mjs';
 import { resolveWindow } from './retro.mjs';
 import { initMemory } from './init-memory.mjs';
-import { buildIssuePrompt } from '../adapters/orca/setup.mjs';
+import { automationNamesForRepo, buildIssuePrompt } from '../adapters/orca/setup.mjs';
 
 const now = Date.parse('2026-11-13T08:00:00Z');
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url));
@@ -356,4 +356,19 @@ test('Orca adapter prompts call the installed skill scripts, not loop/run.mjs', 
   assert.match(prompt, /scripts[\\/]run\.mjs/);
   assert.match(prompt, /\.loop[\\/]work\.json/);
   assert.doesNotMatch(prompt, /node loop\/run\.mjs/);
+});
+
+test('Orca automation names are sanitized and repository-specific', () => {
+  assert.deepEqual(automationNamesForRepo('/work/self-loop', 'RyanBrainNew/self-loop'), {
+    issue: 'ryanbrainnew-self-loop-issue-loop',
+    retro: 'ryanbrainnew-self-loop-retro-loop',
+  });
+  assert.deepEqual(automationNamesForRepo('/work/My Project', 'Acme/My Project'), {
+    issue: 'acme-my-project-issue-loop',
+    retro: 'acme-my-project-retro-loop',
+  });
+  const first = automationNamesForRepo('/work/a/app', 'acme/app');
+  const second = automationNamesForRepo('/work/b/app', 'other/app');
+  assert.notEqual(first.issue, second.issue);
+  assert.match(first.issue, /^[a-z0-9._-]+$/);
 });
