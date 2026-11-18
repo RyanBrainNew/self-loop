@@ -91,6 +91,7 @@ export async function collect({
     const item = {
       number: issue.number,
       title: issue.title,
+      body: issue.body || '',
       url: issue.html_url,
       createdAt: issue.created_at,
       updatedAt: issue.updated_at,

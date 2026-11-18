@@ -96,6 +96,7 @@ async function main() {
   const claimState = {
     number: candidate.number,
     title: candidate.title,
+    body: candidate.body || '',
     url: candidate.url,
     labels: candidate.labels,
     policy: policy.raw,

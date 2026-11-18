@@ -40,6 +40,11 @@ environment rather than assuming the defaults.
 4. Link the PR back to the issue.
 5. Do not merge and do not push the default branch.
 
+When dispatched by the Router, also write the Result Envelope named by
+`SELF_LOOP_RESULT`. Use the schema in `ROUTER.md`; do not edit `.loop/state.json`
+or any memory file. The Router owns Issue status comments; the Worker owns only
+the PR body.
+
 ## Boundaries
 
 - Security, destructive changes, releases, and product direction require a human.

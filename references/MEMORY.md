@@ -72,6 +72,17 @@ Every `SELF_LOOP_*` variable has a legacy `LOOP_*` fallback where applicable.
 | Decisions path | `SELF_LOOP_DECISIONS_PATH` | `LOOP_DECISIONS_PATH` |
 | Self login | `SELF_LOOP_SELF_LOGIN` | `LOOP_SELF_LOGIN` |
 | Agent command | `SELF_LOOP_AGENT` | `LOOP_AGENT` |
+| Max Attempts | `SELF_LOOP_MAX_ATTEMPTS` | `LOOP_MAX_ATTEMPTS` |
+| Lease minutes | `SELF_LOOP_LEASE_MINUTES` | `LOOP_LEASE_MINUTES` |
+| Max concurrency | `SELF_LOOP_MAX_CONCURRENT` | `LOOP_MAX_CONCURRENT` |
+| State lock minutes | `SELF_LOOP_LOCK_MINUTES` | `LOOP_LOCK_MINUTES` |
+| Issue comments | `SELF_LOOP_COMMENTS` | `LOOP_COMMENTS` |
+| Worktree mode | `SELF_LOOP_WORKTREE_MODE` | `LOOP_WORKTREE_MODE` |
+| Worktree directory | `SELF_LOOP_WORKTREE_DIR` | `LOOP_WORKTREE_DIR` |
+| Router context chars | `SELF_LOOP_CONTEXT_ROUTER_CHARS` | `LOOP_CONTEXT_ROUTER_CHARS` |
+| Worker context chars | `SELF_LOOP_CONTEXT_WORKER_CHARS` | `LOOP_CONTEXT_WORKER_CHARS` |
+| Verifier commands | `SELF_LOOP_VERIFY_COMMANDS` | - |
+| Verifier timeout | `SELF_LOOP_VERIFY_TIMEOUT_MINUTES` | `LOOP_VERIFY_TIMEOUT_MINUTES` |
 
 GitHub also accepts `GITHUB_TOKEN` / `GH_TOKEN`, and `GITHUB_REPOSITORY` for the
 repository slug.
@@ -86,3 +97,5 @@ repository slug.
 - Never overwrite history. Supersede it and link the replacement.
 - Retro windows use the last commit touching the lessons file so state survives
   fresh worktrees and CI runners.
+- Only `retro` and `init-memory` write these files. A Worker proposes a lesson
+  in its Result Envelope; a Verifier writes evidence artifacts only.

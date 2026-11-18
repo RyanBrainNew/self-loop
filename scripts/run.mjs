@@ -60,6 +60,9 @@ async function main() {
     if (values.since) args.push('--since', values.since);
     return runScript('retro.mjs', args);
   }
+  if (mode === 'router') {
+    return runScript('router.mjs', ['--repo', repoRoot, ...process.argv.slice(3)]);
+  }
   if (mode === 'agent') {
     if (precheck && !(await githubReachable())) return console.log('[self-loop] GitHub unreachable, skip agent dispatch'), 0;
     const selected = runScript('select.mjs', [...shared, '--json']);
@@ -80,7 +83,7 @@ async function main() {
     });
     return agent.status ?? 2;
   }
-  console.error(`[self-loop] unknown mode: ${mode} (triage|select|issue|retro|agent)`);
+  console.error(`[self-loop] unknown mode: ${mode} (triage|select|issue|retro|router|agent)`);
   return 2;
 }
 

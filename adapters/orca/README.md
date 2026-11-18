@@ -36,6 +36,18 @@ node "/skills/self-loop/scripts/run.mjs" triage --repo .
 The project still needs no `loop/` directory. If you move the installed skill,
 rerun `setup.mjs --replace` so prompts and the precheck keep valid script paths.
 
+The default adapter prompt keeps the compatible triage/select/agent path. To
+use the deterministic Router while Orca owns worktree creation, set
+`"router": { "worktreeMode": "external" }` in the target project and have the
+scheduled prompt call:
+
+```text
+node "/skills/self-loop/scripts/run.mjs" router tick --repo .
+```
+
+The Router then keeps Ticket state, leases, and gates, while Orca supplies the
+worktree and process. The core still has no Orca dependency.
+
 ## Commands
 
 ```bash

@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,6 +32,26 @@ import { resolveWindow } from './retro.mjs';
 import { initMemory } from './init-memory.mjs';
 import { githubStatusReachable } from './precheck.mjs';
 import { automationNamesForRepo, buildIssuePrompt } from '../adapters/orca/setup.mjs';
+import {
+  applyResultToTicket,
+  buildContextPacket,
+  buildIssueStatusComment,
+  buildTaskCard,
+  cleanTicketWorktree,
+  createTicket,
+  emptyState,
+  expireTicketIfNeeded,
+  extractAcceptance,
+  loadState,
+  prepareDispatch,
+  recoverTicket,
+  tickRouter,
+  validateResultEnvelope,
+  verifyTicket,
+  withStateLock,
+  STATUS_MARKER,
+} from './router.mjs';
+import { discoverVerifierCommands, runVerifier } from './verifier.mjs';
 
 const now = Date.parse('2026-11-13T08:00:00Z');
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url));
@@ -342,7 +365,11 @@ test('core scripts contain no scheduler-specific references', () => {
   for (const file of files) {
     const text = readFileSync(join(scriptsDir, file), 'utf8');
     assert.doesNotMatch(text, /\borca\b/i, `${file} must stay scheduler-agnostic`);
-    assert.doesNotMatch(text, /\bloop\//, `${file} must not assume a project-local loop/ directory`);
+    assert.doesNotMatch(
+      text,
+      /(?<!\.)\bloop\/(?:run|triage|select|retro|lib|precheck|init-memory|scripts|references|templates)(?:\/|\b)/,
+      `${file} must not assume a project-local loop/ directory`,
+    );
   }
   assert.ok(existsSync(join(repoRoot, 'templates', 'memory', 'LESSONS.md')));
 });
@@ -384,4 +411,408 @@ test('GitHub precheck treats auth and rate-limit responses as reachable', () => 
   assert.equal(githubStatusReachable(500), false);
   assert.equal(githubStatusReachable(503), false);
   assert.equal(githubStatusReachable(0), false);
+});
+
+test('Task Card parses explicit acceptance and blocks on ambiguity', () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, {}, {});
+  assert.deepEqual(
+    extractAcceptance('## Acceptance criteria\n- [ ] redirect works\n- [x] regression test\n## Notes\n- not acceptance'),
+    ['redirect works', 'regression test'],
+  );
+  const clear = buildTaskCard({
+    ticket: { number: 1, title: 'fix', body: '## Acceptance\n- [ ] redirect works' },
+    settings,
+  });
+  assert.equal(clear.blockedReason, null);
+  assert.deepEqual(clear.acceptance, ['redirect works']);
+  const ambiguous = buildTaskCard({
+    ticket: { number: 2, title: 'unclear' },
+    settings,
+  });
+  assert.match(ambiguous.blockedReason, /No concrete/);
+  assert.equal(ambiguous.assumptions.length, 1);
+});
+
+test('Router settings resolve CLI, environment, config, and defaults in order', () => {
+  const repo = tempRepo();
+  writeFileSync(
+    join(repo, '.self-loop.json'),
+    JSON.stringify({
+      router: {
+        maxAttempts: 3,
+        leaseMinutes: 20,
+        context: { routerChars: 100, workerChars: 200 },
+      },
+      executor: { command: ['node', 'agent.mjs'] },
+      verifier: { commands: ['node -e "process.exit(0)"'] },
+    }),
+  );
+  const fromConfig = resolveSettings(repo, {}, {});
+  assert.equal(fromConfig.router.maxAttempts, 3);
+  assert.equal(fromConfig.router.leaseMinutes, 20);
+  assert.equal(fromConfig.router.context.routerChars, 100);
+  assert.deepEqual(fromConfig.executor.command, ['node', 'agent.mjs']);
+  assert.deepEqual(fromConfig.verifier.commands, ['node -e "process.exit(0)"']);
+
+  const fromEnv = resolveSettings(repo, {}, {
+    SELF_LOOP_MAX_ATTEMPTS: '4',
+    LOOP_LEASE_MINUTES: '15',
+  });
+  assert.equal(fromEnv.router.maxAttempts, 4);
+  assert.equal(fromEnv.router.leaseMinutes, 15);
+  const fromCli = resolveSettings(repo, { maxAttempts: 5 }, { SELF_LOOP_MAX_ATTEMPTS: '4' });
+  assert.equal(fromCli.router.maxAttempts, 5);
+});
+
+test('Context Packet projects roles and truncates memory', () => {
+  const repo = tempRepo();
+  mkdirSync(join(repo, 'memory'), { recursive: true });
+  writeFileSync(join(repo, 'memory', 'LESSONS.md'), 'x'.repeat(500));
+  const settings = resolveSettings(repo, { routerChars: 80, workerChars: 200 }, {});
+  const ticket = createTicket({ number: 5, title: 'context' }, settings);
+  const card = { ticket: 5, goal: 'context', acceptance: ['works'] };
+  const routerPacket = buildContextPacket({ repoRoot: repo, settings, ticket, taskCard: card, role: 'router' });
+  const workerPacket = buildContextPacket({ repoRoot: repo, settings, ticket, taskCard: card, role: 'worker' });
+  assert.equal(routerPacket.taskCard, undefined);
+  assert.deepEqual(workerPacket.taskCard, card);
+  assert.equal(routerPacket.memory.lessons.truncated, true);
+  assert.match(routerPacket.memory.lessons.excerpt, /context truncated/);
+});
+
+test('Result Envelope validates states and lease retry transitions', () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, { worktreeMode: 'external' }, {});
+  const ticket = createTicket({ number: 6, title: 'retry', body: '## Acceptance\n- [ ] works' }, settings);
+  ticket.worktree = repo;
+  const state = emptyState(settings);
+  state.tickets['6'] = ticket;
+  state.activeTicket = 6;
+  const prepared = prepareDispatch({ repoRoot: repo, settings, state, ticket });
+  assert.equal(prepared.blocked, false);
+  assert.equal(ticket.state, 'working');
+  assert.equal(ticket.attempts, 1);
+  assert.ok(ticket.lease.expiresAt);
+
+  const failed = {
+    ticket: 6,
+    attempt: 1,
+    state: 'failed',
+    humanText: 'failed',
+    artifactRefs: [],
+  };
+  assert.equal(validateResultEnvelope(failed).state, 'failed');
+  applyResultToTicket(ticket, validateResultEnvelope(failed));
+  assert.equal(ticket.state, 'queued');
+  const second = prepareDispatch({ repoRoot: repo, settings, state, ticket });
+  assert.equal(second.blocked, false);
+  assert.equal(ticket.attempts, 2);
+  applyResultToTicket(ticket, validateResultEnvelope({ ...failed, attempt: 2 }));
+  assert.equal(ticket.state, 'blocked');
+  recoverTicket({ settings, state, ticket });
+  assert.equal(ticket.state, 'queued');
+  assert.equal(ticket.manualRecoveries, 1);
+  assert.throws(() => validateResultEnvelope({ ...failed, state: 'unknown' }), /invalid result.state/);
+});
+
+test('Router status comments are stable, idempotent, and human-readable', () => {
+  const body = buildIssueStatusComment({
+    number: 42,
+    title: 'fix redirect',
+    state: 'blocked',
+    attempts: 2,
+    maxAttempts: 2,
+    branch: 'loop/42-fix-redirect',
+    pr: 123,
+    humanQuestion: 'Which redirect should expired sessions use?',
+  });
+  assert.match(body, new RegExp(STATUS_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(body, /status: `blocked`/);
+  assert.match(body, /Attempt: 2\/2/);
+  assert.match(body, /Pull request: #123/);
+  assert.match(body, /Which redirect/);
+  assert.match(body, /a person still decides whether to merge/);
+});
+
+test('Router tick creates a Ticket but does not consume an Attempt without an executor', async () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, { worktreeMode: 'external' }, {});
+  const result = await tickRouter({
+    repoRoot: repo,
+    settings,
+    candidate: {
+      number: 7,
+      title: 'tick',
+      body: '## Acceptance\n- [ ] works',
+      labels: ['ready-for-agent'],
+    },
+  });
+  assert.equal(result.status, 'executor-not-configured');
+  const state = loadState(settings);
+  assert.equal(state.tickets['7'].state, 'queued');
+  assert.equal(state.tickets['7'].attempts, 0);
+});
+
+test('Router tick dry-run previews without creating a Ticket or Attempt', async () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, { worktreeMode: 'external' }, {});
+  const result = await tickRouter({
+    repoRoot: repo,
+    settings,
+    dryRun: true,
+    candidate: {
+      number: 71,
+      title: 'preview',
+      body: '## Acceptance\n- [ ] works',
+      labels: ['ready-for-agent'],
+    },
+  });
+  assert.equal(result.status, 'dry-run');
+  assert.equal(result.taskCard.acceptance.length, 1);
+  const state = loadState(settings);
+  assert.deepEqual(state.tickets, {});
+  assert.equal(state.activeTicket, null);
+});
+
+test('Verifier runs in a clean worktree and returns objective evidence', () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+  const settings = resolveSettings(repo, {
+    verifierCommands: ['node -e "process.exit(0)"'],
+  }, {});
+  const ticket = { number: 8, attempts: 1, branch: 'HEAD' };
+  const passed = runVerifier({ repoRoot: repo, settings, ticket });
+  assert.equal(passed.status, 'pass');
+  assert.ok(existsSync(passed.evidencePath));
+  assert.equal(discoverVerifierCommands({ repoRoot: repo, settings }).length, 1);
+  const kept = runVerifier({ repoRoot: repo, settings, ticket, keep: true });
+  assert.ok(existsSync(kept.worktree));
+  const keptAgain = runVerifier({ repoRoot: repo, settings, ticket, keep: true });
+  assert.equal(keptAgain.status, 'pass');
+  assert.ok(existsSync(keptAgain.worktree));
+  execFileSync('git', ['-C', repo, 'worktree', 'remove', '--force', keptAgain.worktree]);
+
+  const failedSettings = resolveSettings(repo, {
+    verifierCommands: ['node -e "process.exit(3)"'],
+  }, {});
+  const failed = runVerifier({
+    repoRoot: repo,
+    settings: failedSettings,
+    ticket: { ...ticket, number: 9 },
+  });
+  assert.equal(failed.status, 'fail');
+});
+
+test('Task Card without concrete acceptance blocks before dispatch', async () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, { worktreeMode: 'external' }, {});
+  const result = await tickRouter({
+    repoRoot: repo,
+    settings,
+    candidate: { number: 10, title: 'unclear', labels: ['ready-for-agent'] },
+  });
+  assert.equal(result.status, 'blocked');
+  const state = loadState(settings);
+  assert.equal(state.tickets['10'].state, 'blocked');
+  assert.equal(state.tickets['10'].attempts, 0);
+  assert.match(state.tickets['10'].humanQuestion, /acceptance criteria/i);
+});
+
+test('expired lease requeues below budget and blocks at the budget', () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+  const settings = resolveSettings(repo, { worktreeMode: 'external', maxAttempts: 2 }, {});
+  const state = emptyState(settings);
+
+  const retry = createTicket({ number: 11, title: 'retry', body: '## Acceptance\n- [ ] works' }, settings);
+  retry.state = 'working';
+  retry.attempts = 1;
+  retry.lease = { expiresAt: new Date(Date.now() - 60_000).toISOString() };
+  state.tickets['11'] = retry;
+  state.activeTicket = 11;
+  const requeued = expireTicketIfNeeded({ repoRoot: repo, settings, state, ticket: retry });
+  assert.equal(requeued.effect, 'requeued');
+  assert.equal(retry.state, 'queued');
+  assert.equal(retry.attempts, 1);
+  assert.equal(retry.lease, null);
+
+  const maxed = createTicket({ number: 12, title: 'maxed', body: '## Acceptance\n- [ ] works' }, settings);
+  maxed.state = 'working';
+  maxed.attempts = 2;
+  maxed.lease = { expiresAt: new Date(Date.now() - 60_000).toISOString() };
+  state.tickets['12'] = maxed;
+  const blocked = expireTicketIfNeeded({ repoRoot: repo, settings, state, ticket: maxed });
+  assert.equal(blocked.effect, 'blocked');
+  assert.equal(maxed.state, 'blocked');
+  assert.match(maxed.humanQuestion, /attempt budget exhausted/);
+  assert.match(maxed.humanQuestion, /router recover/);
+});
+
+test('expired lease blocks when the branch already contains work', () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+  const base = execFileSync('git', ['-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
+  execFileSync('git', ['-C', repo, 'checkout', '-q', '-b', 'loop/13-work']);
+  writeFileSync(join(repo, 'work.txt'), 'partial work\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'partial']);
+  execFileSync('git', ['-C', repo, 'checkout', '-q', base]);
+
+  const settings = resolveSettings(repo, { worktreeMode: 'external', maxAttempts: 3 }, {});
+  const state = emptyState(settings);
+  const ticket = createTicket({ number: 13, title: 'partial', body: '## Acceptance\n- [ ] works' }, settings);
+  ticket.state = 'working';
+  ticket.attempts = 1;
+  ticket.branch = 'loop/13-work';
+  ticket.lease = { expiresAt: new Date(Date.now() - 60_000).toISOString() };
+  state.tickets['13'] = ticket;
+  const result = expireTicketIfNeeded({ repoRoot: repo, settings, state, ticket });
+  assert.equal(result.effect, 'blocked');
+  assert.match(ticket.humanQuestion, /already contains commits/);
+});
+
+test('verifyTicket promotes a pass and retries or blocks a failure', () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+
+  const passing = resolveSettings(repo, {
+    verifierCommands: ['node -e "process.exit(0)"'],
+  }, {});
+  const passState = emptyState(passing);
+  const passTicket = createTicket({ number: 14, title: 'pass' }, passing);
+  passTicket.state = 'verifying';
+  passTicket.attempts = 1;
+  passTicket.branch = 'HEAD';
+  passState.tickets['14'] = passTicket;
+  const passed = verifyTicket({ repoRoot: repo, settings: passing, state: passState, ticket: passTicket });
+  assert.equal(passed.status, 'pass');
+  assert.equal(passTicket.state, 'awaiting_review');
+
+  const failing = resolveSettings(repo, {
+    verifierCommands: ['node -e "process.exit(3)"'],
+  }, {});
+  const failState = emptyState(failing);
+  const retryTicket = createTicket({ number: 15, title: 'retry' }, failing);
+  retryTicket.state = 'verifying';
+  retryTicket.attempts = 1;
+  retryTicket.branch = 'HEAD';
+  failState.tickets['15'] = retryTicket;
+  const failed = verifyTicket({ repoRoot: repo, settings: failing, state: failState, ticket: retryTicket });
+  assert.equal(failed.status, 'fail');
+  assert.equal(retryTicket.state, 'queued');
+
+  retryTicket.state = 'verifying';
+  retryTicket.attempts = 2;
+  const blocked = verifyTicket({ repoRoot: repo, settings: failing, state: failState, ticket: retryTicket });
+  assert.equal(blocked.status, 'fail');
+  assert.equal(retryTicket.state, 'blocked');
+  assert.match(retryTicket.humanQuestion, /Retry budget exhausted/);
+});
+
+test('router clean removes a terminal Ticket worktree', () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+  const settings = resolveSettings(repo, {}, {});
+  const state = emptyState(settings);
+  const worktree = join(settings.router.worktreeDir, '16');
+  mkdirSync(join(worktree, '..'), { recursive: true });
+  execFileSync('git', ['-C', repo, 'worktree', 'add', '-q', '-b', 'loop/16-clean', worktree, 'HEAD']);
+
+  const ticket = createTicket({ number: 16, title: 'clean' }, settings);
+  ticket.state = 'done';
+  ticket.worktree = worktree;
+  state.tickets['16'] = ticket;
+  assert.equal(cleanTicketWorktree({ repoRoot: repo, settings, ticket }), true);
+  assert.equal(existsSync(worktree), false);
+  assert.equal(ticket.worktree, null);
+  assert.doesNotMatch(
+    execFileSync('git', ['-C', repo, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' }),
+    /loop[/\\]16-clean/,
+  );
+  rmSync(settings.outDir, { recursive: true, force: true });
+});
+
+test('router state lock refuses an active lock and clears a stale one', async () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, { lockMinutes: 1 }, {});
+  mkdirSync(settings.outDir, { recursive: true });
+  writeFileSync(join(settings.outDir, 'lock'), '{"pid":1}\n');
+  await assert.rejects(
+    () => withStateLock(settings, async () => 'unreachable'),
+    /router lock is held/,
+  );
+
+  const old = new Date(Date.now() - 2 * 60 * 1000);
+  utimesSync(join(settings.outDir, 'lock'), old, old);
+  const value = await withStateLock(settings, async () => 'acquired');
+  assert.equal(value, 'acquired');
+  assert.equal(existsSync(join(settings.outDir, 'lock')), false);
+});
+
+test('router status runs through run.mjs with --repo from outside the target', () => {
+  const repo = tempRepo();
+  const nested = join(repo, 'src', 'nested');
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(repo, '.self-loop.json'), JSON.stringify({ githubRepo: 'acme/project' }));
+  const output = execFileSync(process.execPath, [
+    join(scriptsDir, 'run.mjs'),
+    'router',
+    'status',
+    '--repo',
+    nested,
+    '--json',
+  ], {
+    cwd: tmpdir(),
+    env: cleanEnv(),
+    encoding: 'utf8',
+  });
+  const state = JSON.parse(output);
+  assert.equal(state.repo, 'acme/project');
+  assert.equal(state.activeTicket, null);
+  assert.deepEqual(state.tickets, {});
+});
+
+test('a Magpie-style copy of the skill root runs against a separate target repo', () => {
+  const skill = mkdtempSync(join(tmpdir(), 'self-loop-skill-'));
+  for (const item of ['SKILL.md', 'package.json', 'scripts', 'references', 'templates']) {
+    cpSync(join(repoRoot, item), join(skill, item), { recursive: true });
+  }
+  const target = tempRepo();
+  writeFileSync(join(target, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', target, 'add', '.']);
+  execFileSync('git', ['-C', target, 'commit', '-q', '-m', 'initial']);
+
+  assert.ok(existsSync(join(skill, 'SKILL.md')));
+  assert.match(readFileSync(join(skill, 'SKILL.md'), 'utf8'), /^name:\s*self-loop$/m);
+  execFileSync(process.execPath, [join(skill, 'scripts', 'init-memory.mjs'), '--repo', target], {
+    cwd: tmpdir(),
+    env: cleanEnv(),
+  });
+  assert.ok(existsSync(join(target, 'memory', 'LESSONS.md')));
+  assert.ok(existsSync(join(target, 'memory', 'code-standards.md')));
+  assert.ok(existsSync(join(target, 'memory', 'DECISIONS.md')));
+
+  execFileSync(process.execPath, [
+    join(skill, 'scripts', 'run.mjs'),
+    'retro',
+    '--repo',
+    target,
+    '--since',
+    'HEAD',
+  ], {
+    cwd: tmpdir(),
+    env: cleanEnv(),
+  });
+  assert.ok(existsSync(join(target, '.loop', 'retro.md')));
+  assert.equal(existsSync(join(skill, '.loop')), false);
 });

@@ -18,6 +18,20 @@ export const DEFAULTS = Object.freeze({
   decisionsPath: 'memory/DECISIONS.md',
 });
 
+export const ROUTER_DEFAULTS = Object.freeze({
+  maxAttempts: 2,
+  leaseMinutes: 45,
+  maxConcurrent: 1,
+  lockMinutes: 30,
+  llmAdvisory: false,
+  comments: true,
+  worktreeMode: 'local',
+  worktreeDir: '.loop/worktrees',
+  routerChars: 2000,
+  workerChars: 8000,
+  verifierTimeoutMinutes: 30,
+});
+
 export const MATT_ROLES = [
   'needs-triage',
   'needs-info',
@@ -144,6 +158,19 @@ function positiveInteger(value, label) {
   return number;
 }
 
+function booleanValue(value, label) {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0' || value === '') return false;
+  throw new Error(`${label} must be true or false`);
+}
+
+function stringArray(value) {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  return [];
+}
+
 /**
  * Resolve project settings with this precedence: CLI > environment > config >
  * defaults. Both SELF_LOOP_* and the legacy LOOP_* names are accepted.
@@ -152,6 +179,18 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
   const config = loadConfig(repoRoot);
   const memoryConfig = config.memory && typeof config.memory === 'object' && !Array.isArray(config.memory)
     ? config.memory
+    : {};
+  const routerConfig = config.router && typeof config.router === 'object' && !Array.isArray(config.router)
+    ? config.router
+    : {};
+  const contextConfig = routerConfig.context && typeof routerConfig.context === 'object' && !Array.isArray(routerConfig.context)
+    ? routerConfig.context
+    : {};
+  const executorConfig = config.executor && typeof config.executor === 'object' && !Array.isArray(config.executor)
+    ? config.executor
+    : {};
+  const verifierConfig = config.verifier && typeof config.verifier === 'object' && !Array.isArray(config.verifier)
+    ? config.verifier
     : {};
 
   const outDir = pathInRepo(
@@ -233,6 +272,122 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
         '',
       ),
     ),
+    router: {
+      maxAttempts: positiveInteger(
+        choose(
+          overrides.maxAttempts,
+          firstEnv(env, ['SELF_LOOP_MAX_ATTEMPTS', 'LOOP_MAX_ATTEMPTS']),
+          routerConfig.maxAttempts,
+          ROUTER_DEFAULTS.maxAttempts,
+        ),
+        'maxAttempts',
+      ),
+      leaseMinutes: positiveInteger(
+        choose(
+          overrides.leaseMinutes,
+          firstEnv(env, ['SELF_LOOP_LEASE_MINUTES', 'LOOP_LEASE_MINUTES']),
+          routerConfig.leaseMinutes,
+          ROUTER_DEFAULTS.leaseMinutes,
+        ),
+        'leaseMinutes',
+      ),
+      maxConcurrent: positiveInteger(
+        choose(
+          overrides.maxConcurrent,
+          firstEnv(env, ['SELF_LOOP_MAX_CONCURRENT', 'LOOP_MAX_CONCURRENT']),
+          routerConfig.maxConcurrent,
+          ROUTER_DEFAULTS.maxConcurrent,
+        ),
+        'maxConcurrent',
+      ),
+      lockMinutes: positiveInteger(
+        choose(
+          overrides.lockMinutes,
+          firstEnv(env, ['SELF_LOOP_LOCK_MINUTES', 'LOOP_LOCK_MINUTES']),
+          routerConfig.lockMinutes,
+          ROUTER_DEFAULTS.lockMinutes,
+        ),
+        'lockMinutes',
+      ),
+      llmAdvisory: booleanValue(
+        choose(
+          overrides.llmAdvisory,
+          firstEnv(env, ['SELF_LOOP_LLM_ADVISORY', 'LOOP_LLM_ADVISORY']),
+          routerConfig.llmAdvisory,
+          ROUTER_DEFAULTS.llmAdvisory,
+        ),
+        'llmAdvisory',
+      ),
+      comments: booleanValue(
+        choose(
+          overrides.comments,
+          firstEnv(env, ['SELF_LOOP_COMMENTS', 'LOOP_COMMENTS']),
+          routerConfig.comments,
+          ROUTER_DEFAULTS.comments,
+        ),
+        'comments',
+      ),
+      worktreeMode: String(
+        choose(
+          overrides.worktreeMode,
+          firstEnv(env, ['SELF_LOOP_WORKTREE_MODE', 'LOOP_WORKTREE_MODE']),
+          routerConfig.worktreeMode,
+          executorConfig.worktreeMode,
+          ROUTER_DEFAULTS.worktreeMode,
+        ),
+      ),
+      worktreeDir: pathInRepo(
+        repoRoot,
+        choose(
+          overrides.worktreeDir,
+          firstEnv(env, ['SELF_LOOP_WORKTREE_DIR', 'LOOP_WORKTREE_DIR']),
+          routerConfig.worktreeDir,
+          ROUTER_DEFAULTS.worktreeDir,
+        ),
+        'worktreeDir',
+      ),
+      context: {
+        routerChars: positiveInteger(
+          choose(
+            overrides.routerChars,
+            firstEnv(env, ['SELF_LOOP_CONTEXT_ROUTER_CHARS', 'LOOP_CONTEXT_ROUTER_CHARS']),
+            contextConfig.routerChars,
+            ROUTER_DEFAULTS.routerChars,
+          ),
+          'routerChars',
+        ),
+        workerChars: positiveInteger(
+          choose(
+            overrides.workerChars,
+            firstEnv(env, ['SELF_LOOP_CONTEXT_WORKER_CHARS', 'LOOP_CONTEXT_WORKER_CHARS']),
+            contextConfig.workerChars,
+            ROUTER_DEFAULTS.workerChars,
+          ),
+          'workerChars',
+        ),
+      },
+    },
+    executor: {
+      command: overrides.executorCommand ?? executorConfig.command ?? env.SELF_LOOP_AGENT ?? env.LOOP_AGENT ?? '',
+      args: stringArray(overrides.executorArgs ?? executorConfig.args),
+    },
+    verifier: {
+      commands: stringArray(
+        overrides.verifierCommands
+          ?? verifierConfig.commands
+          ?? env.SELF_LOOP_VERIFY_COMMANDS
+          ?? [],
+      ),
+      timeoutMinutes: positiveInteger(
+        choose(
+          overrides.verifierTimeoutMinutes,
+          firstEnv(env, ['SELF_LOOP_VERIFY_TIMEOUT_MINUTES', 'LOOP_VERIFY_TIMEOUT_MINUTES']),
+          verifierConfig.timeoutMinutes,
+          ROUTER_DEFAULTS.verifierTimeoutMinutes,
+        ),
+        'verifierTimeoutMinutes',
+      ),
+    },
   };
 }
 

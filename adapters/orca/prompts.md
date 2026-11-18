@@ -33,7 +33,19 @@ node "$SELF_LOOP_SKILL/scripts/run.mjs" retro --repo .
 不要硬凑。绝不合并。
 ```
 
-The precheck for both automations is:
+## Router tick (optional, external worktree)
+
+Use this only when the target project sets
+`"router": { "worktreeMode": "external" }` and Orca owns the worktree:
+
+```text
+这是 <repo> 的 Router tick。当前目录是 Orca 为本轮创建的 worktree:
+node "$SELF_LOOP_SKILL/scripts/run.mjs" router tick --repo .
+按 "$SELF_LOOP_SKILL/references/ROUTER.md" 处理输出。
+绝不合并,绝不 push 默认分支。
+```
+
+The precheck for these automations is:
 
 ```text
 node "$SELF_LOOP_SKILL/adapters/orca/precheck.mjs"

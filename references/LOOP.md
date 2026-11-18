@@ -3,6 +3,10 @@
 > This file describes how to do the work. The policy is supplied by the caller
 > (CLI, environment, or `.self-loop.json`), not hard-coded in the repository.
 
+For the deterministic Router, prefer `references/ROUTER.md`. The Router adds
+Ticket state, leases, Task Cards, Context Packets, Result Envelopes, and an
+independent Verifier around this same issue loop.
+
 ## Inputs
 
 Set `SKILL_DIR` to the installed skill directory and `TARGET_REPO` to the project
