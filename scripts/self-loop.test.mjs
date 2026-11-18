@@ -764,6 +764,8 @@ test('router status runs through run.mjs with --repo from outside the target', (
   const nested = join(repo, 'src', 'nested');
   mkdirSync(nested, { recursive: true });
   writeFileSync(join(repo, '.self-loop.json'), JSON.stringify({ githubRepo: 'acme/project' }));
+  const env = cleanEnv();
+  delete env.GITHUB_REPOSITORY;
   const output = execFileSync(process.execPath, [
     join(scriptsDir, 'run.mjs'),
     'router',
@@ -773,7 +775,7 @@ test('router status runs through run.mjs with --repo from outside the target', (
     '--json',
   ], {
     cwd: tmpdir(),
-    env: cleanEnv(),
+    env,
     encoding: 'utf8',
   });
   const state = JSON.parse(output);
