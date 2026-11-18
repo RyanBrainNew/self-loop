@@ -533,13 +533,17 @@ function executorInvocation(settings, workReference) {
     if (configured.length === 0) return null;
     return {
       file: String(configured[0]),
-      args: [...configured.slice(1).map(String), ...(settings.executor.args || [])],
+      args: [
+        ...configured.slice(1).map(String),
+        ...(settings.executor.args || []),
+        workReference,
+      ],
       shell: false,
     };
   }
   return {
     file: String(configured),
-    args: [workReference, ...(settings.executor.args || [])],
+    args: [...(settings.executor.args || []), workReference],
     shell: true,
   };
 }

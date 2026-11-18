@@ -13,6 +13,15 @@ project's product-specific lessons.
 
 ## Initialization
 
+The normal project path is the one-time setup command:
+
+```bash
+node "$SKILL_DIR/scripts/setup-project.mjs" --repo "$TARGET_REPO"
+```
+
+It creates only missing files. If memory is the only thing needed, the smaller
+command is:
+
 ```bash
 node "$SKILL_DIR/scripts/init-memory.mjs" --repo "$TARGET_REPO"
 ```
@@ -33,7 +42,10 @@ are rejected.
 
 ## Configuration
 
-Project configuration lives at `<repo>/.self-loop.json`:
+Project configuration lives at `<repo>/.self-loop.json`. Setup writes it
+automatically. The full field and environment reference is in `CONFIG.md`.
+
+The memory-specific part can look like:
 
 ```json
 {
@@ -51,41 +63,8 @@ Project configuration lives at `<repo>/.self-loop.json`:
 ```
 
 Top-level `lessonsPath`, `codeStandardsPath`, and `decisionsPath` are also
-accepted. `outDir` and memory paths must stay inside the target repo.
-
-Precedence is CLI > environment > `.self-loop.json` > defaults.
-
-## Environment variables
-
-Every `SELF_LOOP_*` variable has a legacy `LOOP_*` fallback where applicable.
-
-| Purpose | Preferred | Legacy |
-| --- | --- | --- |
-| Target repo | `SELF_LOOP_REPO` | `LOOP_REPO` |
-| Policy | `SELF_LOOP_POLICY` | `LOOP_POLICY` |
-| Claim TTL | `SELF_LOOP_CLAIM_TTL_MINUTES` | `LOOP_CLAIM_TTL_MINUTES` |
-| Retro days | `SELF_LOOP_RETRO_DAYS` | `LOOP_RETRO_DAYS` |
-| Explicit retro window | `SELF_LOOP_RETRO_SINCE` | `LOOP_RETRO_SINCE` |
-| Output directory | `SELF_LOOP_OUT_DIR` | `LOOP_OUT_DIR` |
-| Lessons path | `SELF_LOOP_LESSONS_PATH` | `LOOP_LESSONS_PATH` |
-| Standards path | `SELF_LOOP_CODE_STANDARDS_PATH` | `LOOP_CODE_STANDARDS_PATH` |
-| Decisions path | `SELF_LOOP_DECISIONS_PATH` | `LOOP_DECISIONS_PATH` |
-| Self login | `SELF_LOOP_SELF_LOGIN` | `LOOP_SELF_LOGIN` |
-| Agent command | `SELF_LOOP_AGENT` | `LOOP_AGENT` |
-| Max Attempts | `SELF_LOOP_MAX_ATTEMPTS` | `LOOP_MAX_ATTEMPTS` |
-| Lease minutes | `SELF_LOOP_LEASE_MINUTES` | `LOOP_LEASE_MINUTES` |
-| Max concurrency | `SELF_LOOP_MAX_CONCURRENT` | `LOOP_MAX_CONCURRENT` |
-| State lock minutes | `SELF_LOOP_LOCK_MINUTES` | `LOOP_LOCK_MINUTES` |
-| Issue comments | `SELF_LOOP_COMMENTS` | `LOOP_COMMENTS` |
-| Worktree mode | `SELF_LOOP_WORKTREE_MODE` | `LOOP_WORKTREE_MODE` |
-| Worktree directory | `SELF_LOOP_WORKTREE_DIR` | `LOOP_WORKTREE_DIR` |
-| Router context chars | `SELF_LOOP_CONTEXT_ROUTER_CHARS` | `LOOP_CONTEXT_ROUTER_CHARS` |
-| Worker context chars | `SELF_LOOP_CONTEXT_WORKER_CHARS` | `LOOP_CONTEXT_WORKER_CHARS` |
-| Verifier commands | `SELF_LOOP_VERIFY_COMMANDS` | - |
-| Verifier timeout | `SELF_LOOP_VERIFY_TIMEOUT_MINUTES` | `LOOP_VERIFY_TIMEOUT_MINUTES` |
-
-GitHub also accepts `GITHUB_TOKEN` / `GH_TOKEN`, and `GITHUB_REPOSITORY` for the
-repository slug.
+accepted. Memory paths must stay inside the target repo. CLI and environment
+overrides still work for CI or one-off runs.
 
 ## Rules
 

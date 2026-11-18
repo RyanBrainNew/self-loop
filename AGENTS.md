@@ -7,8 +7,9 @@ document; detailed workflows live in `references/`.
 
 ## Layout
 
-- `scripts/` - scheduler-agnostic core (`run`, `triage`, `select`, `retro`,
-  `router`, `verifier`, `lib`, `precheck`, `init-memory`, tests).
+- `scripts/` - scheduler-agnostic core (`setup-project`, `run`, `triage`,
+  `select`, `retro`, `router`, `verifier`, `lib`, `precheck`, `init-memory`,
+  tests).
 - `references/` - workflow, memory, and policy documentation.
 - `templates/memory/` - generic project memory templates.
 - `adapters/orca/` - optional Orca setup, prompts, and precheck.
@@ -35,6 +36,7 @@ document; detailed workflows live in `references/`.
 ```bash
 npm test
 node --test scripts/self-loop.test.mjs
+node scripts/setup-project.mjs --repo /path/to/project --dry-run
 node scripts/init-memory.mjs --repo /path/to/project --dry-run
 node scripts/run.mjs router status --repo /path/to/project --json
 ```
@@ -43,7 +45,8 @@ node scripts/run.mjs router status --repo /path/to/project --json
 
 - Preserve behavior unless the task explicitly changes it.
 - Keep scripts dependency-free and Node 20+ compatible.
-- Update `references/ROUTER.md` and `references/MEMORY.md` when changing
-  configuration, paths, state, or workflow behavior.
+- Update `references/SETUP.md`, `references/CONFIG.md`, `references/ROUTER.md`,
+  and `references/MEMORY.md` when changing setup, configuration, paths, state,
+  or workflow behavior.
 - Use `rg` for string/config searches; use MCP graph tools when available for
   code discovery.

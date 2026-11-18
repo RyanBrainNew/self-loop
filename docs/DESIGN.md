@@ -34,8 +34,9 @@ This design combines three ideas:
 - The first Verifier uses a clean worktree and a separate process, not a
   container or sandbox. Missing gates produce `human_review`, never a false
   pass.
-- Only `retro` and `init-memory` write memory. Workers may propose lessons in
-  their Result Envelope.
+- Only `retro` and the `init-memory` routine write memory. Setup invokes that
+  routine to create missing files. Workers may propose lessons in their Result
+  Envelope.
 - The Router owns Issue comments and status notifications. The Worker owns the
   pull request body. The Verifier writes artifacts only. Automatic comments use
   stable idempotency markers.
@@ -403,7 +404,8 @@ Migration from an old `loop/` directory:
 
 1. Keep the project's existing memory content.
 2. Remove old `loop/` commands from project docs.
-3. Install the skill and run `init-memory.mjs`.
+3. Install the skill and run `setup-project.mjs` once; existing config and
+   memory are preserved.
 4. Update cron, CI, and Orca prompts to call the installed `scripts/run.mjs`.
 5. Re-run triage and retro; preserve policy, labels, TTL, and PR dedupe behavior.
 

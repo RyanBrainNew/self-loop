@@ -33,6 +33,14 @@ import { initMemory } from './init-memory.mjs';
 import { githubStatusReachable } from './precheck.mjs';
 import { automationNamesForRepo, buildIssuePrompt } from '../adapters/orca/setup.mjs';
 import {
+  detectExecutor,
+  detectGithubRepo,
+  ensureGitignore,
+  ensureLabels,
+  mergeProjectConfig,
+  setupProject,
+} from './setup-project.mjs';
+import {
   applyResultToTicket,
   buildContextPacket,
   buildIssueStatusComment,
@@ -40,6 +48,7 @@ import {
   cleanTicketWorktree,
   createTicket,
   emptyState,
+  executeDispatch,
   expireTicketIfNeeded,
   extractAcceptance,
   loadState,
@@ -307,6 +316,215 @@ test('init-memory CLI honours --repo from outside the target repository', () => 
   assert.ok(existsSync(join(repo, 'memory', 'DECISIONS.md')));
 });
 
+test('setup detects GitHub and executor without requiring another config file', () => {
+  const repo = tempRepo();
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@github.com:acme/project.git']);
+  assert.equal(
+    detectGithubRepo({
+      repoRoot: repo,
+      explicit: 'explicit/repo',
+      env: { GITHUB_REPOSITORY: 'env/repo' },
+    }),
+    'explicit/repo',
+  );
+  assert.equal(
+    detectGithubRepo({ repoRoot: repo, env: { GITHUB_REPOSITORY: 'env/repo' } }),
+    'env/repo',
+  );
+  assert.equal(detectGithubRepo({ repoRoot: repo, env: {} }), 'acme/project');
+
+  assert.equal(detectExecutor({ explicit: 'custom-agent --flag', env: {} }), 'custom-agent --flag');
+  assert.equal(
+    detectExecutor({ env: { SELF_LOOP_AGENT: 'env-agent --flag' }, hasCommand: () => false }),
+    'env-agent --flag',
+  );
+  assert.deepEqual(
+    detectExecutor({
+      env: {},
+      hasCommand: (name) => name === 'codex',
+    }),
+    ['codex', 'exec', '--full-auto'],
+  );
+  assert.deepEqual(
+    detectExecutor({
+      env: {},
+      hasCommand: (name) => name === 'claude',
+    }),
+    ['claude', '-p'],
+  );
+  assert.equal(detectExecutor({ env: {}, hasCommand: () => false }), '');
+});
+
+test('setup config merge preserves user edits and only fills missing gates', () => {
+  const existing = {
+    githubRepo: 'old/repo',
+    executor: { command: ['custom-agent'], extra: true },
+    verifier: { commands: ['npm run existing'], timeoutMinutes: 12 },
+    memory: { lessons: 'docs/memory/lessons.md' },
+    unknown: { keep: true },
+  };
+  const merged = mergeProjectConfig({
+    existing,
+    githubRepo: 'new/repo',
+    executor: ['codex', 'exec'],
+    verifierCommands: ['npm test'],
+    memoryDir: 'docs/memory',
+  });
+  assert.equal(merged.githubRepo, 'new/repo');
+  assert.deepEqual(merged.executor.command, ['codex', 'exec']);
+  assert.equal(merged.executor.extra, true);
+  assert.deepEqual(merged.verifier.commands, ['npm run existing']);
+  assert.equal(merged.verifier.timeoutMinutes, 12);
+  assert.deepEqual(merged.unknown, { keep: true });
+  assert.equal(merged.memory.lessons, 'docs/memory/LESSONS.md');
+  assert.equal(merged.memory.codeStandards, 'docs/memory/code-standards.md');
+  assert.equal(merged.memory.decisions, 'docs/memory/DECISIONS.md');
+  assert.equal(existing.githubRepo, 'old/repo');
+});
+
+test('setup labels are best-effort, limited to the five roles, and idempotent', () => {
+  const calls = [];
+  const runner = (file, args) => {
+    calls.push({ file, args });
+    if (args[0] === 'label' && args[1] === 'list') {
+      return JSON.stringify([{ name: 'needs-triage' }]);
+    }
+    return '';
+  };
+  const result = ensureLabels({ githubRepo: 'acme/project', runner });
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(result.created, [
+    'needs-info',
+    'ready-for-agent',
+    'ready-for-human',
+    'wontfix',
+  ]);
+  const created = calls
+    .filter(({ args }) => args[0] === 'label' && args[1] === 'create')
+    .map(({ args }) => args[2]);
+  assert.deepEqual(created, result.created);
+  assert.ok(created.every((name) => [
+    'needs-triage',
+    'needs-info',
+    'ready-for-agent',
+    'ready-for-human',
+    'wontfix',
+  ].includes(name)));
+});
+
+test('setup gitignore adds the loop output once and honours custom output', () => {
+  const repo = tempRepo();
+  const first = ensureGitignore({ repoRoot: repo });
+  assert.deepEqual(first.added, ['.loop/']);
+  assert.match(readFileSync(join(repo, '.gitignore'), 'utf8'), /^\.loop\/$/m);
+
+  const second = ensureGitignore({ repoRoot: repo });
+  assert.deepEqual(second.added, []);
+  assert.equal(
+    readFileSync(join(repo, '.gitignore'), 'utf8').match(/^\.loop\/$/gm).length,
+    1,
+  );
+
+  const custom = ensureGitignore({ repoRoot: repo, entries: ['artifacts/loop/'] });
+  assert.deepEqual(custom.added, ['artifacts/loop/']);
+});
+
+test('setupProject configures a project once without overwriting later edits', () => {
+  const repo = tempRepo();
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/acme/project.git']);
+  writeFileSync(
+    join(repo, 'package.json'),
+    JSON.stringify({ scripts: { test: 'node --test', lint: 'eslint .' } }),
+  );
+
+  const first = setupProject({
+    repoRoot: repo,
+    executor: ['node', 'agent.mjs'],
+    labels: false,
+    env: {},
+  });
+  assert.equal(first.githubRepo, 'acme/project');
+  assert.deepEqual(first.verifierCommands, ['npm test', 'npm run lint']);
+  const config = JSON.parse(readFileSync(join(repo, '.self-loop.json'), 'utf8'));
+  assert.deepEqual(config.executor.command, ['node', 'agent.mjs']);
+  assert.deepEqual(config.verifier.commands, ['npm test', 'npm run lint']);
+  assert.ok(existsSync(join(repo, 'memory', 'LESSONS.md')));
+  assert.ok(existsSync(join(repo, 'memory', 'code-standards.md')));
+  assert.ok(existsSync(join(repo, 'memory', 'DECISIONS.md')));
+  assert.match(readFileSync(join(repo, '.gitignore'), 'utf8'), /^\.loop\/$/m);
+
+  writeFileSync(join(repo, 'memory', 'LESSONS.md'), '# Project lessons\n');
+  const second = setupProject({
+    repoRoot: repo,
+    labels: false,
+    env: { GITHUB_REPOSITORY: 'wrong/repo' },
+    executorDetector: () => {
+      throw new Error('existing executor must win');
+    },
+  });
+  assert.equal(second.config.changed, false);
+  assert.equal(second.githubRepo, 'acme/project');
+  assert.deepEqual(second.executor, ['node', 'agent.mjs']);
+  assert.equal(readFileSync(join(repo, 'memory', 'LESSONS.md'), 'utf8'), '# Project lessons\n');
+});
+
+test('setupProject dry-run reports work without writing project files', () => {
+  const repo = tempRepo();
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/acme/dry.git']);
+  const result = setupProject({
+    repoRoot: repo,
+    executor: 'node agent.mjs',
+    labels: false,
+    dryRun: true,
+    env: {},
+  });
+  assert.equal(result.config.changed, true);
+  assert.equal(result.memory.created.length, 3);
+  assert.equal(existsSync(join(repo, '.self-loop.json')), false);
+  assert.equal(existsSync(join(repo, 'memory')), false);
+  assert.equal(existsSync(join(repo, '.gitignore')), false);
+});
+
+test('setupProject warns instead of inventing an executor or verifier', () => {
+  const repo = tempRepo();
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/acme/bare.git']);
+  const result = setupProject({
+    repoRoot: repo,
+    labels: false,
+    env: {},
+    executorDetector: () => '',
+  });
+  assert.match(result.warnings.join('\n'), /No executor detected/);
+  assert.match(result.warnings.join('\n'), /No verifier commands discovered/);
+  assert.equal(result.config.changed, true);
+});
+
+test('setup CLI works from outside the target and prints the next command', () => {
+  const repo = tempRepo();
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/acme/cli.git']);
+  const nested = join(repo, 'src', 'nested');
+  mkdirSync(nested, { recursive: true });
+  const output = execFileSync(process.execPath, [
+    join(scriptsDir, 'setup-project.mjs'),
+    '--repo',
+    nested,
+    '--github',
+    'acme/cli',
+    '--executor',
+    'node',
+    '--no-labels',
+  ], {
+    cwd: tmpdir(),
+    env: cleanEnv(),
+    encoding: 'utf8',
+  });
+  assert.match(output, /next:/);
+  assert.match(output, /router tick/);
+  const config = JSON.parse(readFileSync(join(repo, '.self-loop.json'), 'utf8'));
+  assert.equal(config.githubRepo, 'acme/cli');
+  assert.equal(config.executor.command, 'node');
+});
+
 test('retro explicit window overrides lessons history and environment', () => {
   const repo = tempRepo();
   const window = resolveWindow({ since: 'abc123', repoRoot: repo, lessonsPath: join(repo, 'memory', 'LESSONS.md') });
@@ -463,6 +681,49 @@ test('Router settings resolve CLI, environment, config, and defaults in order', 
   assert.equal(fromEnv.router.leaseMinutes, 15);
   const fromCli = resolveSettings(repo, { maxAttempts: 5 }, { SELF_LOOP_MAX_ATTEMPTS: '4' });
   assert.equal(fromCli.router.maxAttempts, 5);
+});
+
+test('configured executors receive the installed WORK.md reference', () => {
+  const repo = tempRepo();
+  const prepared = {
+    blocked: false,
+    worktree: repo,
+    taskCard: {},
+    paths: {},
+  };
+  const arraySettings = resolveSettings(repo, {
+    worktreeMode: 'external',
+    executorCommand: ['codex', 'exec', '--full-auto'],
+  }, {});
+  const fromArray = executeDispatch({
+    repoRoot: repo,
+    settings: arraySettings,
+    state: {},
+    ticket: { number: 1 },
+    prepared,
+    dryRun: true,
+  });
+  assert.equal(fromArray.invocation.shell, false);
+  assert.deepEqual(fromArray.invocation.args, [
+    'exec',
+    '--full-auto',
+    join(repoRoot, 'references', 'WORK.md'),
+  ]);
+
+  const stringSettings = resolveSettings(repo, {
+    worktreeMode: 'external',
+    executorCommand: 'codex exec --full-auto',
+  }, {});
+  const fromString = executeDispatch({
+    repoRoot: repo,
+    settings: stringSettings,
+    state: {},
+    ticket: { number: 1 },
+    prepared,
+    dryRun: true,
+  });
+  assert.equal(fromString.invocation.shell, true);
+  assert.equal(fromString.invocation.args.at(-1), join(repoRoot, 'references', 'WORK.md'));
 });
 
 test('Context Packet projects roles and truncates memory', () => {
@@ -796,10 +1057,21 @@ test('a Magpie-style copy of the skill root runs against a separate target repo'
 
   assert.ok(existsSync(join(skill, 'SKILL.md')));
   assert.match(readFileSync(join(skill, 'SKILL.md'), 'utf8'), /^name:\s*self-loop$/m);
-  execFileSync(process.execPath, [join(skill, 'scripts', 'init-memory.mjs'), '--repo', target], {
+  assert.ok(existsSync(join(skill, 'scripts', 'setup-project.mjs')));
+  execFileSync(process.execPath, [
+    join(skill, 'scripts', 'setup-project.mjs'),
+    '--repo',
+    target,
+    '--github',
+    'acme/target',
+    '--executor',
+    'node',
+    '--no-labels',
+  ], {
     cwd: tmpdir(),
     env: cleanEnv(),
   });
+  assert.ok(existsSync(join(target, '.self-loop.json')));
   assert.ok(existsSync(join(target, 'memory', 'LESSONS.md')));
   assert.ok(existsSync(join(target, 'memory', 'code-standards.md')));
   assert.ok(existsSync(join(target, 'memory', 'DECISIONS.md')));

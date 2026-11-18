@@ -60,21 +60,35 @@ TARGET_REPO="/absolute/path/to/project"
 
 如果团队要求“skill 代码必须和业务仓库同 commit 才能发布”，仍可把 skill 作为子模块或包固定版本；但运行入口仍应从 `SKILL.md` 所在目录定位，而不是假设项目里有 `loop/`。
 
-## 初始化项目
+## 首次接入（只需一次）
 
 ```bash
-node "$SKILL_DIR/scripts/init-memory.mjs" --repo "$TARGET_REPO"
+node "$SKILL_DIR/scripts/setup-project.mjs" --repo "$TARGET_REPO"
 ```
 
-默认创建：
+它会自动完成项目接入：
 
-- `memory/LESSONS.md`：错题本；
-- `memory/code-standards.md`：合并门禁；
-- `memory/DECISIONS.md`：已拍板决策。
+- 从 `origin` 识别 GitHub 仓库；
+- 识别本机可用的 agent，并写成 executor；
+- 从 `package.json` 发现 `test` / `lint` / `typecheck` / `build` 门禁；
+- 创建三份 memory，已有文件不覆盖；
+- 写入 `.self-loop.json`，补 `.gitignore`；
+- 尽力创建五个角色标签。
 
-已有文件不会被覆盖。可用 `--memory-dir docs/memory` 或单独路径参数改变位置，详见 `references/MEMORY.md`。
+不需要先手写配置。重跑是安全的，会保留已有 executor、仓库、门禁和 memory。
+只有探测不到 agent 时，才需要补一条：
 
-建议把 `.loop/` 加入目标项目的 `.gitignore`。
+```bash
+node "$SKILL_DIR/scripts/setup-project.mjs" \
+  --repo "$TARGET_REPO" \
+  --executor "codex exec --full-auto"
+```
+
+详见 `references/SETUP.md`。接入后先预览一次：
+
+```bash
+node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET_REPO" --dry-run
+```
 
 ## 手动运行
 
@@ -109,69 +123,19 @@ Router 的完整状态机、Result Envelope、lease 和验证规则见 `referenc
 
 ## 项目配置
 
-在目标仓库根放 `.self-loop.json`（全部可选）：
+正常使用时不需要读或写配置。`setup-project.mjs` 已经把项目差异写进目标仓库根的
+`.self-loop.json`；默认值本身也能工作。这个文件只属于目标项目，不是 skill 源码。
 
-```json
-{
-  "policy": "ready-for-agent",
-  "claimTtlMinutes": 180,
-  "retroDays": 2,
-  "outDir": ".loop",
-  "githubRepo": "owner/name",
-  "memory": {
-    "lessons": "memory/LESSONS.md",
-    "codeStandards": "memory/code-standards.md",
-    "decisions": "memory/DECISIONS.md"
-  },
-  "router": {
-    "maxAttempts": 2,
-    "leaseMinutes": 45,
-    "maxConcurrent": 1,
-    "lockMinutes": 30,
-    "comments": true,
-    "worktreeMode": "local",
-    "worktreeDir": ".loop/worktrees",
-    "context": {
-      "routerChars": 2000,
-      "workerChars": 8000
-    }
-  },
-  "executor": {
-    "command": ["codex", "exec", "--full-auto"]
-  },
-  "verifier": {
-    "commands": ["npm test", "npm run lint"],
-    "timeoutMinutes": 30
-  }
-}
-```
+需要理解时，只看四块：
 
-优先级：CLI > 环境变量 > `.self-loop.json` > 默认值。输出目录和 memory 路径必须位于目标仓库内。
+- `executor`：用哪个 agent 执行 Ticket；
+- `verifier`：独立验证时复跑哪些命令；
+- `router`：重试次数、lease、并发和工作树归属；
+- `memory` / `policy`：三份 memory 的位置和选 Issue 的标签策略。
 
-- `router.maxAttempts` 是总 Attempt 数，不是额外重试次数；默认 2。
-- `router.leaseMinutes` 默认 45；lease 过期和验证失败都消耗 Attempt。
-- `router.worktreeMode` 默认 `local`，核心创建 worktree；设为 `external` 时由外部编排器创建，核心仍拥有 Ticket 状态和门禁。
-- `comments: true` 让 Router 维护 Issue 上唯一一条带 `<!-- self-loop:status -->` 标记的状态评论；`--no-notify` 可临时关闭。
-- `verifier.commands` 优先；未配置时自动发现 `package.json` 的 `test` / `lint` / `typecheck` / `build`。
-- 找不到可执行门禁时 Verifier 返回 `human_review`，不会假装通过。
-
-常用环境变量：
-
-```bash
-SELF_LOOP_REPO=/path/to/project
-SELF_LOOP_POLICY=ready-for-agent
-SELF_LOOP_CLAIM_TTL_MINUTES=180
-SELF_LOOP_RETRO_DAYS=2
-SELF_LOOP_LESSONS_PATH=memory/LESSONS.md
-SELF_LOOP_MAX_ATTEMPTS=2
-SELF_LOOP_LEASE_MINUTES=45
-SELF_LOOP_WORKTREE_MODE=local
-SELF_LOOP_COMMENTS=true
-SELF_LOOP_VERIFY_COMMANDS="npm test"
-GITHUB_TOKEN=...
-```
-
-旧名 `LOOP_REPO`、`LOOP_POLICY`、`LOOP_CLAIM_TTL_MINUTES`、`LOOP_RETRO_DAYS`、`LOOP_LESSONS_PATH` 等继续兼容；完整列表见 `references/MEMORY.md`。
+高级配置、完整字段、环境变量和优先级统一放在 `references/CONFIG.md`。日常不要手改；
+先重跑 setup，它只补缺失项，不覆盖已有选择。CI 只需要显式设置 `SELF_LOOP_REPO` 或传
+`--repo`，GitHub 凭据使用 `GITHUB_TOKEN` / `GH_TOKEN`。
 
 ## cron / CI
 
@@ -239,7 +203,7 @@ magpie library skill update self-loop
 
 ```bash
 git -C "$SKILL_DIR" pull --ff-only
-node "$SKILL_DIR/scripts/init-memory.mjs" --repo "$TARGET_REPO"
+node "$SKILL_DIR/scripts/setup-project.mjs" --repo "$TARGET_REPO"
 ```
 
 升级不会覆盖目标项目 memory，也不会修改目标项目业务代码。若使用 Orca，移动或升级后重跑：
@@ -268,7 +232,7 @@ Magpie 的更新会按安装时记录的 GitHub `repo + path` 重新拉取；如
 
 1. 保留目标项目的 `memory/*` 内容，不要复制 mind-tree-learn 的产品特定教训。
 2. 删除目标项目里的 `loop/` 目录，以及 `AGENTS.md` / 文档中指向 `node loop/...` 的旧命令。
-3. 安装本 skill，运行 `init-memory.mjs`（已有 memory 文件会跳过）。
+3. 安装本 skill，运行 `setup-project.mjs`（已有的 memory 和配置会保留）。
 4. 更新 Orca / cron / CI 命令为已安装 skill 的 `scripts/run.mjs --repo <target>`；需要 Router 时改为 `router tick --repo <target>`。
 5. 先跑 `router tick --dry-run`、triage 和 retro 检查输出；策略、标签、TTL、open PR 去重行为保持兼容。
 6. 确认 `.loop/` 已加入目标项目 `.gitignore`，且 memory 文件没有被模板覆盖。
@@ -281,11 +245,11 @@ Magpie 的更新会按安装时记录的 GitHub `repo + path` 重新拉取；如
 npm test
 ```
 
-CI 在 push 和 PR 上运行 `node --test`。测试覆盖策略/标签/选择、配置与 memory 路径解析、`--repo` 解析、open PR 去重、领取 TTL、retro 显式窗口和 memory 初始化不覆盖。
+CI 在 push 和 PR 上运行 `node --test`。测试覆盖策略/标签/选择、配置与 memory 路径解析、`--repo` 解析、open PR 去重、领取 TTL、retro 显式窗口、一键 setup 的探测/合并/幂等行为，以及 memory 初始化不覆盖。
 
 Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、`router status` 的 `--repo` 冒烟，以及模拟 Magpie 只复制 skill 根目录后的独立运行。
 
-当前测试基线：`37` 个测试全部通过（Node 20+）。
+当前测试基线：`46` 个测试全部通过（Node 20+）。
 
 ## 设计文档
 

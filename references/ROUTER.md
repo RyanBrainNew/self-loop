@@ -234,6 +234,9 @@ SELF_LOOP_CONTEXT=<.../context.worker.json>
 SELF_LOOP_RESULT=<.../result.json>
 ```
 
+The installed `references/WORK.md` path is also passed as the executor's final
+argument, for both array and string executor commands.
+
 The Worker works only in its worktree, pushes its branch, opens a PR whose body
 starts with `Closes #N`, and writes a Result Envelope. It never merges, never
 pushes the default branch, and never edits labels or policy.
