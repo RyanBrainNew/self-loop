@@ -1,82 +1,145 @@
-# Project Setup
+# Project Setup as an Agent Conversation
 
-Run setup once per target repository. The goal is that the user does not have
-to learn or hand-write the configuration format.
+This is a prompt-driven setup method, not a command the user has to remember.
+The agent explores the project, reports findings, asks only about real
+ambiguities, confirms the proposed setup, and applies it with the bundled
+deterministic helper.
 
-```bash
-node "$SKILL_DIR/scripts/setup-project.mjs" --repo "$TARGET_REPO"
-```
+Do not make the user hand-write `.self-loop.json`, memorize flags, or run the
+helper themselves.
 
-`SKILL_DIR` is the directory containing the installed `SKILL.md`. The target
-repository does not need a copied `loop/` directory.
+## 1. Decide whether setup is needed
 
-## What setup detects
+Run this flow only when:
 
-| Item | Detection order |
-| --- | --- |
-| GitHub repository | `--github`, existing `.self-loop.json`, `GITHUB_REPOSITORY`, `origin` remote |
-| Executor | `--executor`, existing config, `SELF_LOOP_AGENT` / `LOOP_AGENT`, local `codex`, local `claude` |
-| Verifier | `--verify`, existing config, `package.json` scripts (`test`, `lint`, `typecheck`, `build`) |
-| Memory | existing config, defaults under `memory/`, or `--memory-dir` |
+- the user asks to configure, initialize, or enable self-loop; or
+- the user wants an automated issue-to-PR loop and the project has no usable
+  `.self-loop.json`; or
+- an existing setup is incomplete and the user asks to repair or upgrade it.
 
-Setup then:
+Do not write project configuration for a one-off `triage`, `select`, or
+`retro` command. Do not enable a scheduler or automation as part of setup
+unless the user explicitly asks for that separate step.
 
-- writes or merges `.self-loop.json`;
-- creates missing memory files from `templates/memory/`;
-- adds the output directory, normally `.loop/`, to `.gitignore`;
-- creates missing role labels with `gh`, if available;
-- prints the exact dry-run and live `router tick` commands.
+## 2. Explore before asking
 
-It never overwrites existing memory and never replaces an existing repository,
-executor, verifier, or memory choice on a later run.
+Inspect the target repository. Do not assume defaults without checking.
 
-## Normal path
+- `git remote -v`, `.git/config`: is this a GitHub repository? Which one?
+- `.self-loop.json`: does a project config already exist? Which explicit
+  choices must be preserved?
+- `memory/LESSONS.md`, `memory/code-standards.md`, `memory/DECISIONS.md`: do
+  memory files already exist, including in a custom directory?
+- `package.json`, `Makefile`, `pyproject.toml`, `AGENTS.md`: what commands
+  actually verify this project?
+- `.loop/`, `loop/`, cron files, CI workflows, Orca setup: is an old loop or a
+  scheduler already present?
+- Local agent commands: is `codex` or `claude` available? Is
+  `SELF_LOOP_AGENT` already set?
+- `gh auth status` and `gh label list`: can labels be created? Do any of the
+  five roles already exist?
+
+Use the repository's real state. A check that found nothing should be reported
+as missing, not guessed.
+
+## 3. Report findings
+
+Summarize concisely:
 
 ```text
-setup-project.mjs
-  -> report what was detected
-  -> write project-local config
-  -> create memory
-  -> print one dry-run command
+Repository: owner/name
+Existing config: none | path and preserved choices
+Executor: detected command | not detected
+Verifier: detected commands | not detected
+Memory: existing files | will create defaults
+Labels: already present | can create | gh unavailable
+Old loop/scheduler: none | found at ...
 ```
 
-The user should only need to act when setup reports a missing branch:
+Also say what will not change: existing memory, existing explicit config, and
+the target project's business code.
 
-- no GitHub repository: add an `origin` remote or pass `--github owner/name`;
-- no executor: pass `--executor "<command>"`;
-- no verifier: add a `package.json` test script or pass `--verify "<command>"`.
+## 4. Ask only about real branches
 
-Do not ask the user to edit a large JSON file for these cases.
+Do not ask about values that were detected or that have safe defaults. Ask one
+question at a time, and only for choices that cannot be inferred:
 
-## Options
+- no GitHub repository: ask for `owner/name`, or whether to add an `origin`
+  remote;
+- no executor: ask which agent command to use, recommending a detected
+  `codex`/`claude` command when available;
+- no verifier: propose the project's test command; ask only if no sensible
+  command exists;
+- custom memory location: ask only when existing memory lives somewhere other
+  than `memory/`.
+
+Never ask the user to choose retry, lease, context, lock, or other advanced
+values for a first setup. Those defaults are already safe and documented in
+`CONFIG.md`.
+
+## 5. Confirm the proposal
+
+Show a short proposal before writing:
+
+```text
+I will configure:
+- GitHub: owner/name
+- Executor: codex exec --full-auto
+- Independent checks: npm test, npm run lint
+- Memory: memory/LESSONS.md, memory/code-standards.md, memory/DECISIONS.md
+- Labels: create only the five self-loop roles if missing
+- Ignore: .loop/
+
+I will preserve: existing memory, existing explicit choices, business code.
+Proceed?
+```
+
+Only the user's confirmation is required. Do not dump the full JSON schema.
+
+## 6. Apply through the bundled helper
+
+Run the helper yourself; it is the deterministic writer behind this
+conversation. The user does not need to run it or know its flags.
 
 ```bash
---repo <path>          target repository (also SELF_LOOP_REPO, then LOOP_REPO)
---github <owner/name>  override GitHub repository detection
---executor <command>   agent command, for example "codex exec --full-auto"
---verify <command>     one verifier command; overrides package-script discovery
---memory-dir <path>    memory directory, default memory/
---no-labels            do not call gh label
---dry-run              report actions without writing files
---json                 machine-readable result
+node "$SKILL_DIR/scripts/setup-project.mjs" \
+  --repo "$TARGET_REPO" \
+  [--github owner/name] \
+  [--executor "<command>"] \
+  [--verify "<command>"] \
+  [--memory-dir <path>] \
+  [--no-labels] \
+  [--dry-run] \
+  [--json]
 ```
 
-`--repo` may point at a subdirectory; it is normalized to the repository root.
+For an existing config, run with `--dry-run` first and compare the reported
+changes with the confirmed proposal. Then run without `--dry-run`.
 
-## Scheduling is separate
+The helper:
 
-Setup configures the project. It does not install a cron entry or enable an
-external scheduler. After the dry run:
+- merges `.self-loop.json` without removing unknown fields;
+- creates only missing memory files;
+- adds `.loop/` or the configured output directory to `.gitignore`;
+- tries to create the five role labels with `gh`;
+- prints the first `router tick --dry-run` command.
 
-```bash
-node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET_REPO"
-```
+If the helper cannot run, stop and report the error. Do not silently replace it
+with a large hand-written config unless the user asks for that fallback.
 
-Call that command from cron or CI when automation is desired. The optional Orca
-adapter is documented in `adapters/orca/`.
+## 7. Report the result, then stop
+
+Report:
+
+- what was detected, created, or preserved;
+- any warnings, especially missing executor, verifier, or label creation;
+- the exact first dry-run command.
+
+Setup does not run triage, implement work, install cron, or enable an external
+scheduler. Those are separate decisions.
 
 ## Re-running
 
-Re-running setup is safe and is the normal upgrade step. It only fills missing
-configuration and reports what it kept. Use `--dry-run` first when changing an
-existing project.
+Re-running is safe and is the normal repair/upgrade path. It only fills missing
+configuration and preserves existing memory and explicit choices. Use
+`--dry-run` first when the project already has a config.

@@ -1,6 +1,6 @@
 ---
 name: self-loop
-description: Set up once per project, then run or schedule a project-agnostic issue-to-PR loop with deterministic routing, independent verification, configurable memory, and merge gates.
+description: Configure through an agent conversation when a project wants the loop, then run or schedule a project-agnostic issue-to-PR workflow with deterministic routing, independent verification, configurable memory, and merge gates.
 ---
 
 # self-loop
@@ -32,21 +32,31 @@ node "$SKILL_DIR/scripts/run.mjs" retro --repo /path/to/project
 `--repo` wins over `SELF_LOOP_REPO`, then legacy `LOOP_REPO`. Git operations,
 `.loop/` output, worktrees, and memory paths stay inside the target repository.
 
-## First run in a project
+## Configure a project through conversation
 
-```bash
-node "$SKILL_DIR/scripts/setup-project.mjs" --repo /path/to/project
-node "$SKILL_DIR/scripts/run.mjs" router tick --repo /path/to/project --dry-run
-```
+Run project setup only when the user asks to configure or enable self-loop, or
+when they ask for automated issue-to-PR work and the project has no usable
+`.self-loop.json`. Do not write project configuration for a one-off triage,
+select, or retrospective command.
 
-Run setup once. It detects the GitHub repository, executor, verifier commands,
-and memory location; writes `.self-loop.json`; creates missing memory; updates
-`.gitignore`; and tries to create the five role labels. Re-running is safe and
-does not overwrite existing choices or memory.
+When setup is needed, read `references/SETUP.md` and follow it as an agent
+conversation:
 
-Ask the user only when setup reports a genuinely missing choice, such as no
-executor. Do not ask them to hand-write the full configuration. Default memory
-paths are `memory/LESSONS.md`, `memory/code-standards.md`, and
+1. Explore the target repository instead of assuming its setup.
+2. Report what you found and what can be detected automatically.
+3. Ask only about choices that genuinely branch, normally a missing GitHub
+   repository or executor.
+4. Show the proposed configuration and let the user confirm it.
+5. Run the built-in `scripts/setup-project.mjs` helper to apply the agreed
+   configuration, then report exactly what was created or preserved.
+6. Show the first `router tick --dry-run` command.
+
+The user should not need to memorize Node commands or hand-write JSON. The
+helper is the deterministic implementation behind the conversation, not the
+user-facing setup method. Re-running setup is safe and never overwrites existing
+memory or explicit choices.
+
+Default memory paths are `memory/LESSONS.md`, `memory/code-standards.md`, and
 `memory/DECISIONS.md`, all relative to the target repo.
 
 Install this repository as a skill (Magpie Library, a collection repository's

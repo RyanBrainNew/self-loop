@@ -13,14 +13,9 @@ project's product-specific lessons.
 
 ## Initialization
 
-The normal project path is the one-time setup command:
-
-```bash
-node "$SKILL_DIR/scripts/setup-project.mjs" --repo "$TARGET_REPO"
-```
-
-It creates only missing files. If memory is the only thing needed, the smaller
-command is:
+The normal project path is the agent setup conversation in `SETUP.md`. It
+creates only missing files. If memory is the only thing needed, or setup is
+running in a non-agent environment, the smaller deterministic command is:
 
 ```bash
 node "$SKILL_DIR/scripts/init-memory.mjs" --repo "$TARGET_REPO"

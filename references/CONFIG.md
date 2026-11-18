@@ -1,7 +1,8 @@
 # Configuration Reference
 
-Most projects should use `scripts/setup-project.mjs` once and not edit this
-file by hand. Configuration is project-local and lives at:
+Most projects should use the agent-facing setup conversation once and not edit
+this file by hand. The bundled `scripts/setup-project.mjs` is the deterministic
+writer behind that conversation. Configuration is project-local and lives at:
 
 ```text
 <target-repo>/.self-loop.json

@@ -60,35 +60,28 @@ TARGET_REPO="/absolute/path/to/project"
 
 如果团队要求“skill 代码必须和业务仓库同 commit 才能发布”，仍可把 skill 作为子模块或包固定版本；但运行入口仍应从 `SKILL.md` 所在目录定位，而不是假设项目里有 `loop/`。
 
-## 首次接入（只需一次）
+## 首次接入（由 agent 对话完成）
 
-```bash
-node "$SKILL_DIR/scripts/setup-project.mjs" --repo "$TARGET_REPO"
-```
+不需要自己跑 Node、背参数或手写 JSON。只有当这个项目确实要启用 loop 时，
+直接在项目里对 agent 说：
 
-它会自动完成项目接入：
+> 用 self-loop 的 setup 配置这个项目，先告诉我你会改什么。
 
-- 从 `origin` 识别 GitHub 仓库；
-- 识别本机可用的 agent，并写成 executor；
-- 从 `package.json` 发现 `test` / `lint` / `typecheck` / `build` 门禁；
-- 创建三份 memory，已有文件不覆盖；
-- 写入 `.self-loop.json`，补 `.gitignore`；
-- 尽力创建五个角色标签。
+Agent 会进入 skill 内置的 setup 对话，按 `references/SETUP.md` 执行：
 
-不需要先手写配置。重跑是安全的，会保留已有 executor、仓库、门禁和 memory。
-只有探测不到 agent 时，才需要补一条：
+1. 先检查 git remote、已有 `.self-loop.json`、memory、测试命令、旧 `loop/` 和本机 agent；
+2. 报告探测结果，以及哪些已有选择会被保留；
+3. 只对无法推断的选项提问，通常是“仓库是哪个”或“用哪个 agent”；
+4. 给出简短配置提案，等你确认；
+5. 在内部调用 skill 自带的确定性写入器完成配置，而不是让你执行命令；
+6. 报告实际创建/保留的内容，并给出第一次 `router tick --dry-run`。
 
-```bash
-node "$SKILL_DIR/scripts/setup-project.mjs" \
-  --repo "$TARGET_REPO" \
-  --executor "codex exec --full-auto"
-```
+它会自动处理 GitHub 仓库、executor、测试门禁、三份 memory、`.gitignore` 和五个角色标签。
+已有 memory 和显式配置不会被覆盖。Setup 不会顺便启用 cron、Orca automation 或开始实现 issue。
 
-详见 `references/SETUP.md`。接入后先预览一次：
-
-```bash
-node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET_REPO" --dry-run
-```
+`scripts/setup-project.mjs` 仍然存在，但它是这套对话背后的执行器，不是用户入口；
+无 agent 的 CI/维护环境可以直接调用它。Agent 必须遵循 `references/SETUP.md`，不要把
+完整配置表丢给用户。
 
 ## 手动运行
 
@@ -123,7 +116,7 @@ Router 的完整状态机、Result Envelope、lease 和验证规则见 `referenc
 
 ## 项目配置
 
-正常使用时不需要读或写配置。`setup-project.mjs` 已经把项目差异写进目标仓库根的
+正常使用时不需要读或写配置。Agent 的 setup 对话已经把项目差异写进目标仓库根的
 `.self-loop.json`；默认值本身也能工作。这个文件只属于目标项目，不是 skill 源码。
 
 需要理解时，只看四块：
@@ -134,8 +127,9 @@ Router 的完整状态机、Result Envelope、lease 和验证规则见 `referenc
 - `memory` / `policy`：三份 memory 的位置和选 Issue 的标签策略。
 
 高级配置、完整字段、环境变量和优先级统一放在 `references/CONFIG.md`。日常不要手改；
-先重跑 setup，它只补缺失项，不覆盖已有选择。CI 只需要显式设置 `SELF_LOOP_REPO` 或传
-`--repo`，GitHub 凭据使用 `GITHUB_TOKEN` / `GH_TOKEN`。
+需要修复或升级时，对 agent 说“检查现有 self-loop 配置并只补缺失项”，它会先 dry-run
+再应用。CI 只需要显式设置 `SELF_LOOP_REPO` 或传 `--repo`，GitHub 凭据使用
+`GITHUB_TOKEN` / `GH_TOKEN`。
 
 ## cron / CI
 
@@ -203,6 +197,16 @@ magpie library skill update self-loop
 
 ```bash
 git -C "$SKILL_DIR" pull --ff-only
+```
+
+升级后，对项目里的 agent 说：
+
+> 用 self-loop setup 检查现有配置，只补缺失项，先 dry-run。
+
+无 agent 的维护环境才直接调用确定性执行器：
+
+```bash
+node "$SKILL_DIR/scripts/setup-project.mjs" --repo "$TARGET_REPO" --dry-run
 node "$SKILL_DIR/scripts/setup-project.mjs" --repo "$TARGET_REPO"
 ```
 
@@ -232,7 +236,7 @@ Magpie 的更新会按安装时记录的 GitHub `repo + path` 重新拉取；如
 
 1. 保留目标项目的 `memory/*` 内容，不要复制 mind-tree-learn 的产品特定教训。
 2. 删除目标项目里的 `loop/` 目录，以及 `AGENTS.md` / 文档中指向 `node loop/...` 的旧命令。
-3. 安装本 skill，运行 `setup-project.mjs`（已有的 memory 和配置会保留）。
+3. 安装本 skill；在项目里让 agent 走一次 setup 对话（已有的 memory 和配置会保留）。
 4. 更新 Orca / cron / CI 命令为已安装 skill 的 `scripts/run.mjs --repo <target>`；需要 Router 时改为 `router tick --repo <target>`。
 5. 先跑 `router tick --dry-run`、triage 和 retro 检查输出；策略、标签、TTL、open PR 去重行为保持兼容。
 6. 确认 `.loop/` 已加入目标项目 `.gitignore`，且 memory 文件没有被模板覆盖。
@@ -249,7 +253,7 @@ CI 在 push 和 PR 上运行 `node --test`。测试覆盖策略/标签/选择、
 
 Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、`router status` 的 `--repo` 冒烟，以及模拟 Magpie 只复制 skill 根目录后的独立运行。
 
-当前测试基线：`46` 个测试全部通过（Node 20+）。
+当前测试基线：`47` 个测试全部通过（Node 20+）。
 
 ## 设计文档
 

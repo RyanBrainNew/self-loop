@@ -404,8 +404,8 @@ Migration from an old `loop/` directory:
 
 1. Keep the project's existing memory content.
 2. Remove old `loop/` commands from project docs.
-3. Install the skill and run `setup-project.mjs` once; existing config and
-   memory are preserved.
+3. Install the skill and run the agent-facing setup conversation once; existing
+   config and memory are preserved.
 4. Update cron, CI, and Orca prompts to call the installed `scripts/run.mjs`.
 5. Re-run triage and retro; preserve policy, labels, TTL, and PR dedupe behavior.
 

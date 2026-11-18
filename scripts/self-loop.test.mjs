@@ -592,6 +592,17 @@ test('core scripts contain no scheduler-specific references', () => {
   assert.ok(existsSync(join(repoRoot, 'templates', 'memory', 'LESSONS.md')));
 });
 
+test('project setup is routed as an agent conversation', () => {
+  const skill = readFileSync(join(repoRoot, 'SKILL.md'), 'utf8');
+  const setup = readFileSync(join(repoRoot, 'references', 'SETUP.md'), 'utf8');
+  assert.match(skill, /Configure a project through conversation/);
+  assert.match(skill, /references\/SETUP\.md/);
+  assert.match(setup, /prompt-driven setup method/i);
+  assert.match(setup, /Do not make the user hand-write/i);
+  assert.match(setup, /Ask only about real branches/);
+  assert.match(setup, /Only the user's confirmation is required/);
+});
+
 test('Orca adapter prompts call the installed skill scripts, not loop/run.mjs', () => {
   const prompt = buildIssuePrompt({
     name: 'fixture',

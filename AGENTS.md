@@ -30,6 +30,8 @@ document; detailed workflows live in `references/`.
   `maxAttempts`; otherwise block for `router recover`.
 - Never merge PRs or push a default branch from the loop.
 - Do not copy product-specific memory from other repositories into templates.
+- Project setup is an agent conversation. `setup-project.mjs` is the internal
+  deterministic writer and CI fallback, not the user-facing onboarding flow.
 
 ## Commands
 
