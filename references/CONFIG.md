@@ -22,6 +22,7 @@ Setup usually writes a small version of this:
 ```json
 {
   "githubRepo": "owner/name",
+  "language": "zh-CN",
   "executor": {
     "command": ["codex", "exec", "--full-auto"]
   },
@@ -35,6 +36,7 @@ Setup usually writes a small version of this:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
+| `language` | `zh-CN` | Language for PR titles/bodies and person-facing Router text: `zh-CN` or `en` |
 | `policy` | `ready-for-agent` | `ready-for-agent`, `label:<name>`, `do`, or `off` |
 | `claimTtlMinutes` | `180` | How long another run treats an assignment as a live claim |
 | `retroDays` | `2` | Fallback retrospective window |
@@ -87,7 +89,9 @@ SELF_LOOP_RESULT
 | --- | --- | --- |
 | `router.maxAttempts` | `2` | Total Worker Attempts, not extra retries |
 | `router.leaseMinutes` | `45` | Lease before recovery or blocking |
-| `router.maxConcurrent` | `1` | Concurrent Tickets; keep `1` for the first version |
+| `router.maxConcurrent` | `1` | Tickets the Router may keep in `queued/working/verifying` at once |
+| `router.dispatchMode` | `wait` | `wait` runs an executor inline; `background` detaches it and collects its Result Envelope on a later tick |
+| `router.inboxLimit` | `200` | Maximum retained inbox events; handled events are pruned first |
 | `router.lockMinutes` | `30` | Stale state-lock threshold |
 | `router.llmAdvisory` | `false` | Allows advisory LLM help; it never grants authority |
 | `router.comments` | `true` | Maintain one marked status comment on the Issue |
@@ -98,6 +102,11 @@ SELF_LOOP_RESULT
 
 `worktreeMode: "external"` means an adapter owns worktree creation. The core
 still owns Ticket state, leases, gates, and verification.
+
+To process more than one Issue per tick, set `maxConcurrent` above `1` and use
+`dispatchMode: "background"` for true parallelism. With `wait`, the Router still
+admits up to `maxConcurrent` Tickets but runs their executors one after another
+inside the same tick.
 
 ## Verifier
 
@@ -124,6 +133,7 @@ Every applicable `SELF_LOOP_*` variable has a legacy `LOOP_*` fallback.
 | Purpose | Preferred | Legacy |
 | --- | --- | --- |
 | Target repo | `SELF_LOOP_REPO` | `LOOP_REPO` |
+| Language | `SELF_LOOP_LANGUAGE` | `LOOP_LANGUAGE` |
 | Policy | `SELF_LOOP_POLICY` | `LOOP_POLICY` |
 | Claim TTL | `SELF_LOOP_CLAIM_TTL_MINUTES` | `LOOP_CLAIM_TTL_MINUTES` |
 | Retro days | `SELF_LOOP_RETRO_DAYS` | `LOOP_RETRO_DAYS` |
@@ -137,6 +147,8 @@ Every applicable `SELF_LOOP_*` variable has a legacy `LOOP_*` fallback.
 | Max Attempts | `SELF_LOOP_MAX_ATTEMPTS` | `LOOP_MAX_ATTEMPTS` |
 | Lease minutes | `SELF_LOOP_LEASE_MINUTES` | `LOOP_LEASE_MINUTES` |
 | Max concurrency | `SELF_LOOP_MAX_CONCURRENT` | `LOOP_MAX_CONCURRENT` |
+| Dispatch mode | `SELF_LOOP_DISPATCH_MODE` | `LOOP_DISPATCH_MODE` |
+| Inbox limit | `SELF_LOOP_INBOX_LIMIT` | `LOOP_INBOX_LIMIT` |
 | State lock minutes | `SELF_LOOP_LOCK_MINUTES` | `LOOP_LOCK_MINUTES` |
 | LLM advisory | `SELF_LOOP_LLM_ADVISORY` | `LOOP_LLM_ADVISORY` |
 | Issue comments | `SELF_LOOP_COMMENTS` | `LOOP_COMMENTS` |

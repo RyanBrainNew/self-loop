@@ -21,6 +21,9 @@ node "$SKILL_DIR/scripts/run.mjs" select --repo "$TARGET_REPO" --policy <policy>
 `select` writes `.loop/work.json`. If the configured `outDir` is different, use
 that directory instead.
 
+`work.json` also carries `language`, so a legacy select-then-implement run has
+the same PR language requirement as a Router dispatch.
+
 - Exit `3` from `select`: no eligible issue; stop without changing code.
 - Exit `2`: token, network, or claim failure; report it and stop.
 - If `work.json` exists, it is the only issue for this run.
@@ -66,9 +69,12 @@ the blocking labels above.
 
 1. Push the branch and open a PR against the default branch.
 2. Put `Closes #N` on the first line of the PR body.
-3. Explain what changed, what was run, where it ran, and what is **Not run**.
-4. Link the PR back to the issue.
-5. Never merge. Never push the default branch.
+3. Use the configured `language` for the title and body. The default is
+   `zh-CN`: all explanatory prose is Simplified Chinese, while code, commands,
+   paths, identifiers, and verbatim logs stay as they are.
+4. Explain what changed, what was run, where it ran, and what is **Not run**.
+5. Link the PR back to the issue.
+6. Never merge. Never push the default branch.
 
 ## Boundaries
 

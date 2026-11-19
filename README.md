@@ -115,6 +115,13 @@ node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET_REPO" --dry-run
 # 正式推进一个 Ticket：选择 -> 领取 -> Task Card -> Worker -> 独立验证
 node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET_REPO"
 
+# 追加一个 inbox 事件（等价的 GitHub webhook 适配见 adapters/github-actions/）
+node "$SKILL_DIR/scripts/run.mjs" router post --repo "$TARGET_REPO" \
+  --type issue --action labeled --ticket 42
+
+# 查看事件队列
+node "$SKILL_DIR/scripts/run.mjs" router inbox --repo "$TARGET_REPO" --pending
+
 # 查看当前 Ticket、Attempt、lease、PR 和阻塞问题
 node "$SKILL_DIR/scripts/run.mjs" router status --repo "$TARGET_REPO" --json
 
@@ -128,6 +135,47 @@ node "$SKILL_DIR/scripts/run.mjs" retro --repo "$TARGET_REPO"
 `select` 退出码 `3` 表示没有候选，`2` 表示配置、token、网络或领取失败。策略和标签规则见 `references/POLICY.md`。
 Router 的完整状态机、Result Envelope、lease 和验证规则见 `references/ROUTER.md`。
 
+## 中文 PR 与并发 / 事件
+
+PR 标题和正文默认使用简体中文。配置项是 `.self-loop.json` 的 `language`：
+
+```json
+{
+  "language": "zh-CN"
+}
+```
+
+`zh-CN` 下只翻译说明性文字；代码、命令、路径、标识符和日志原文保持原样，
+`Closes #N` 也保持英文，GitHub 才能正确关联 Issue。需要英文时改为 `"en"`。
+新建或修复配置时，`setup` 会从 `README.md` / `AGENTS.md` 检测语言并写入，
+已有显式值不会被覆盖。
+
+默认 `maxConcurrent` 是 `1`，所以一次 tick 只派发一个 Worker；其他 Ticket 要等
+下一次 tick。要在一个循环里并行处理多条 Issue：
+
+```json
+{
+  "router": {
+    "maxConcurrent": 3,
+    "dispatchMode": "background"
+  }
+}
+```
+
+`background` 会把 Worker 放到后台，tick 立即返回；下一次 tick 读取 Worker 写好的
+`result.json`，再进入独立验证。`wait` 仍然可用，但多个 Worker 会在同一次 tick 内
+串行执行。`blocked`、`awaiting_review` 不占并发名额，人可以同时 review 多个 PR。
+临时调试也可以直接传：
+
+```bash
+node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET_REPO" \
+  --concurrent 3 --dispatch-mode background
+```
+
+`router post` 把事件写进 `.loop/inbox.json`，`router tick` 先消费事件再选 Issue。
+同一 `--id` 重复提交是幂等的；事件只是唤醒和优先级提示，不会绕过标签、领取、
+验收标准和验证门禁。GitHub Actions 适配器在 `adapters/github-actions/`。
+
 ## 项目配置
 
 正常使用时不需要读或写配置。Agent 的 setup 对话已经把项目差异写进目标仓库根的
@@ -137,6 +185,7 @@ Router 的完整状态机、Result Envelope、lease 和验证规则见 `referenc
 
 - `executor`：用哪个 agent 执行 Ticket；
 - `verifier`：独立验证时复跑哪些命令；
+- `language`：PR 标题/正文和 Router 面向人的文字用中文还是英文；
 - `router`：重试次数、lease、并发和工作树归属；
 - `memory` / `policy`：三份 memory 的位置和选 Issue 的标签策略。
 
@@ -154,7 +203,7 @@ Router 的完整状态机、Result Envelope、lease 和验证规则见 `referenc
 30 6 * * *  node /opt/skills/self-loop/scripts/run.mjs retro --repo /srv/project >> /var/log/self-loop-retro.log 2>&1
 ```
 
-`router tick` 在空闲时选择并领取一个 Issue，生成 Task Card 和 Context Packet，交给配置的 executor；Worker 交付后由独立 Verifier 复跑门禁。也可以继续使用无 Router 的旧式流水线：
+`router tick` 在空闲时选择并领取 Issue（默认一条，`maxConcurrent` 可调），生成 Task Card 和 Context Packet，交给配置的 executor；Worker 交付后由独立 Verifier 复跑门禁。也可以继续使用无 Router 的旧式流水线：
 
 ```bash
 SELF_LOOP_AGENT='codex exec --full-auto' \
@@ -259,9 +308,9 @@ npm test
 
 CI 在 push 和 PR 上运行 `node --test`。测试覆盖策略/标签/选择、配置与 memory 路径解析、`--repo` 解析、open PR 去重、领取 TTL、retro 显式窗口、一键 setup 的探测/合并/幂等行为，以及 memory 初始化不覆盖。
 
-Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、`router status` 的 `--repo` 冒烟，以及只复制 skill 根目录后的独立运行。
+Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、inbox 幂等与结果事件、`maxConcurrent` 并发上限、`router status` 的 `--repo` 冒烟，以及只复制 skill 根目录后的独立运行。
 
-当前测试基线：`48` 个测试全部通过（Node 20+）。
+当前测试基线：`58` 个测试全部通过（Node 20+）。
 
 ## 设计文档
 

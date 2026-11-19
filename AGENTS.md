@@ -27,6 +27,10 @@ under Apache-2.0; keep `LICENSE` and the `package.json` license field in sync.
   off` policies.
 - The Router is the only writer of Ticket state. Workers write Attempt
   artifacts and the PR body; the independent Verifier writes evidence only.
+- Inbox events wake the Router and hint at priority; they never authorize work
+  or bypass a gate. Concurrency is bounded by `router.maxConcurrent`.
+- Person-facing output follows the project `language` (default `zh-CN`); code,
+  commands, paths, identifiers, and verbatim logs stay unchanged.
 - Only `retro` and `init-memory` write memory.
 - Lease expiry and verification failure consume an Attempt. Retry only below
   `maxAttempts`; otherwise block for `router recover`.

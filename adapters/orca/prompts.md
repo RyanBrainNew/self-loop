@@ -20,6 +20,8 @@ SELF_LOOP_SKILL=/absolute/path/to/self-loop
 否则读 ".loop/work.json",按 "$SELF_LOOP_SKILL/references/LOOP.md"
 与 "$SELF_LOOP_SKILL/references/WORK.md" 实现这个 issue:
 分支 -> 门禁 -> PR(第一行 Closes #N)。绝不合并,绝不 push 默认分支。
+PR 标题和正文使用项目 language 配置（默认简体中文）；代码、命令、路径、
+标识符和日志原文保持原样。
 ```
 
 ## Retro loop
@@ -30,7 +32,7 @@ node "$SELF_LOOP_SKILL/scripts/run.mjs" retro --repo .
 然后按 "$SELF_LOOP_SKILL/references/RETRO.md" 更新项目记忆文件
 (默认 memory/LESSONS.md)。用分支 + PR 交付
 (chore(self-loop): retro YYYY-MM-DD)。没有值得记的教训就说明检查范围并结束,
-不要硬凑。绝不合并。
+不要硬凑。绝不合并。PR 标题和正文使用项目 language 配置。
 ```
 
 ## Router tick (optional, external worktree)
@@ -45,8 +47,26 @@ node "$SELF_LOOP_SKILL/scripts/run.mjs" router tick --repo .
 绝不合并,绝不 push 默认分支。
 ```
 
+`router.maxConcurrent` 大于 1 时，一次 tick 可以推进多条 Ticket；
+`dispatchMode: "background"` 会立即返回，后台 Worker 的 Result Envelope
+由下一次 tick 收集。
+
 The precheck for these automations is:
 
 ```text
 node "$SELF_LOOP_SKILL/adapters/orca/precheck.mjs"
 ```
+
+## Inbox / event wake-up
+
+When another scheduler or webhook already owns the trigger, post an event and
+then tick:
+
+```text
+node "$SELF_LOOP_SKILL/scripts/run.mjs" router post --repo . \
+  --type issue --action labeled --ticket <N> --id <delivery-id> --file event.json
+node "$SELF_LOOP_SKILL/scripts/run.mjs" router tick --repo .
+```
+
+The same `--id` is idempotent. The event only wakes the Router; it does not
+authorize work or skip a gate.

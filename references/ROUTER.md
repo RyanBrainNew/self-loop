@@ -19,6 +19,8 @@ TARGET_REPO=/absolute/path/to/project
 
 node "$SKILL_DIR/scripts/run.mjs" router tick     --repo "$TARGET_REPO"
 node "$SKILL_DIR/scripts/run.mjs" router status   --repo "$TARGET_REPO" --json
+node "$SKILL_DIR/scripts/run.mjs" router post     --repo "$TARGET_REPO" --type issue --ticket 42
+node "$SKILL_DIR/scripts/run.mjs" router inbox    --repo "$TARGET_REPO" --json
 node "$SKILL_DIR/scripts/run.mjs" router verify   --repo "$TARGET_REPO" --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" router report   --repo "$TARGET_REPO" --file result.json
 node "$SKILL_DIR/scripts/run.mjs" router recover  --repo "$TARGET_REPO" --ticket 42
@@ -28,8 +30,10 @@ node "$SKILL_DIR/scripts/run.mjs" router watchdog --repo "$TARGET_REPO"
 
 | Command | Purpose |
 | --- | --- |
-| `tick` | Select one eligible Issue when idle, recover an expired safe Attempt, dispatch, or verify. This is the cron entry point. |
+| `tick` | Drain the inbox, collect completed Result Envelopes, recover expired Attempts, verify, and dispatch up to `maxConcurrent` Tickets. This is the cron and event entry point. |
 | `status` | Print `state.json`, or a compact Ticket summary without `--json`. |
+| `post` | Append one durable inbox event. Use `--id` for idempotent webhook retries. |
+| `inbox` | List inbox events; `--pending` shows only unhandled events. |
 | `verify` | Run the independent Verifier for one Ticket. |
 | `report` | Apply a Worker's Result Envelope written outside the process. |
 | `recover` | Put a blocked Ticket back in the queue for one more Attempt. A person runs this. |
@@ -64,6 +68,7 @@ relative to that root, never relative to the directory that launched Node.
 ```text
 .loop/
   state.json
+  inbox.json
   lock
   tickets/
     42.json
@@ -74,17 +79,56 @@ relative to that root, never relative to the directory that launched Node.
         context.router.json
         context.worker.json
         result.json
+        worker.stdout.txt
+        worker.stderr.txt
         verify.jsonl
         verify-1.stdout.txt
         verify-1.stderr.txt
 ```
 
-Only the Router writes `state.json`, `tickets/`, and the lock. A Worker writes
-its Attempt-scoped Result Envelope and PR body. A Verifier writes only
-evidence artifacts. Neither Worker nor Verifier edits Ticket state.
+Only the Router writes `state.json`, `tickets/`, `inbox.json`, and the lock. A
+Worker writes its Attempt-scoped Result Envelope and PR body. A Verifier writes
+only evidence artifacts. Neither Worker nor Verifier edits Ticket state.
 
 `state.json` is an index; `tickets/<N>.json` is the durable Ticket record. Both
 are written atomically. A stale lock is cleared after `router.lockMinutes`.
+
+## Inbox and events
+
+`router post` appends one event to `.loop/inbox.json`; `router tick` drains
+pending events before it evaluates Tickets. The inbox is a **wake-up log and
+priority hint**, not an authorization: the Router still reads GitHub for
+eligibility and still applies every deterministic gate.
+
+```json
+{
+  "id": "evt-2026-11-19T08:00:00.000Z-a1b2c3d4",
+  "type": "issue",
+  "action": "labeled",
+  "ticket": 42,
+  "payload": {},
+  "createdAt": "2026-11-19T08:00:00.000Z",
+  "handledAt": null,
+  "outcome": null,
+  "error": null
+}
+```
+
+Event types:
+
+| Type | Effect |
+| --- | --- |
+| `issue` | Wakes the Router; the Ticket number is preferred during selection. `closed` marks a known Ticket done/dropped. |
+| `pull_request` | Records the PR number/head; `closed` marks the Ticket done when merged, dropped otherwise. |
+| `result`, `worker` | Applies a Result Envelope from `payload.result` or `payload.resultPath`. |
+| `verify` | Wake-up; the next tick verifies any `verifying` Ticket. |
+| `recover`, `clean` | Runs the same operation as the CLI command for one Ticket. |
+| `schedule`, `control`, `manual` | Wake-up or an explicit `action: recover|clean|noop`. |
+
+Posting the same `--id` twice is a no-op. A failed event is marked handled with
+`outcome: "error"` and `error`; it does not block later events. Re-post it with
+a new id after fixing the cause. Handled events beyond `router.inboxLimit` are
+pruned oldest-first; pending events are never pruned.
 
 ## Lifecycle
 
@@ -133,6 +177,7 @@ silently duplicated; a person reviews it first.
 {
   "ticket": 42,
   "goal": "Fix the expired-session redirect",
+  "language": "zh-CN",
   "inScope": ["src/auth/**", "tests/auth/**"],
   "outOfScope": ["billing/**"],
   "acceptance": [
@@ -152,6 +197,10 @@ criteria`, or `验收`, followed by list items or checkboxes. If no concrete,
 verifiable criterion is found, the Router does not guess: it sets `blocked` and
 returns one question to a person.
 
+`language` is copied from the project setting. A Worker must use it for the PR
+title and body; code, commands, paths, identifiers, and verbatim logs keep their
+original form.
+
 An optional Planner may draft a Task Card with explicit assumptions, but those
 assumptions are not authorization and cannot replace acceptance.
 
@@ -161,7 +210,7 @@ The Router assembles project facts once and projects them per role:
 
 - Router projection: candidate, claim, lease, Attempts, PR, and open question.
 - Worker projection: Ticket, Task Card, memory excerpts, artifact references,
-  and hard constraints.
+  and hard constraints, including `language`.
 
 Defaults are 2,000 characters for the Router projection and 8,000 for the
 Worker projection. Long memory text is truncated with a marker while file and
@@ -211,6 +260,12 @@ fields. Large logs and diffs stay in artifacts and are referenced by path.
 Core default: `worktreeMode: "local"`. The Router creates one worktree per
 Ticket under `.loop/worktrees/<N>` and records the branch.
 
+`dispatchMode: "wait"` runs the executor inline and keeps the first-version
+behavior. `dispatchMode: "background"` detaches the executor, writes
+`worker.stdout.txt` / `worker.stderr.txt`, and returns with the Ticket in
+`working`. A later `tick` collects the Result Envelope, so a completion event or
+the fallback schedule can move the Ticket forward.
+
 External scheduler: `worktreeMode: "external"`. The Router passes the target
 repository and packet paths, but the adapter owns worktree creation. The
 optional Orca adapter is one such scheduler; the core never requires it.
@@ -220,6 +275,10 @@ optional Orca adapter is one such scheduler; the core never requires it.
   "executor": {
     "kind": "local",
     "command": ["codex", "exec", "--full-auto"]
+  },
+  "router": {
+    "maxConcurrent": 3,
+    "dispatchMode": "background"
   }
 }
 ```
@@ -283,11 +342,49 @@ Configured paths remain relative to the target repository. See `MEMORY.md`.
 CI uses the same command with the project checkout as `--repo`. A scheduler only
 decides when to call the Router; it does not own Ticket state or gates.
 
+An event adapter can post first, then tick:
+
+```bash
+node /opt/skills/self-loop/scripts/run.mjs router post --repo /srv/project \
+  --type issue --action labeled --ticket 42 --id "$DELIVERY_ID" --file event.json
+node /opt/skills/self-loop/scripts/run.mjs router tick --repo /srv/project
+```
+
+The optional GitHub Actions adapter in `adapters/github-actions/` does exactly
+this for `issues`, `pull_request`, `issue_comment`, `workflow_dispatch`, and a
+fallback schedule.
+
+## Concurrency
+
+`router.maxConcurrent` counts Tickets in `queued`, `claimed`, `working`, or
+`verifying`. `blocked`, `awaiting_review`, `done`, and `dropped` do not occupy a
+slot, so a person can review several PRs while the loop continues.
+
+The same values can be supplied per run:
+
+```bash
+node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET_REPO" \
+  --concurrent 3 --dispatch-mode background
+```
+
+One tick:
+
+1. drains inbox events;
+2. applies completed Result Envelopes;
+3. expires leases;
+4. verifies Tickets in `verifying`;
+5. creates newly selected Tickets up to the remaining capacity;
+6. dispatches each queued Ticket at most once.
+
+The third Issue waits for the next tick when `maxConcurrent` is reached. That is
+intentional: the Router never silently exceeds the configured concurrency.
+
 ## Safety rules
 
 - Never merge a pull request.
 - Never push the default branch.
 - Never add a sixth label.
+- Never treat an inbox event as authorization; it only wakes the Router.
 - Never trust Worker self-verification.
 - Never treat missing verification as a pass.
 - Never let a configured path escape the target repository.

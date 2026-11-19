@@ -37,11 +37,20 @@ export function automationNamesForRepo(repoPath, slug = repoSlug(repoPath)) {
   };
 }
 
-export function buildIssuePrompt({ name, policy, repoPath, outDir = join(repoPath, '.loop') }) {
+export function buildIssuePrompt({
+  name,
+  policy,
+  repoPath,
+  outDir = join(repoPath, '.loop'),
+  language = 'zh-CN',
+}) {
   const runScript = join(skillRoot, 'scripts', 'run.mjs');
   const loopReference = join(skillRoot, 'references', 'LOOP.md');
   const workReference = join(skillRoot, 'references', 'WORK.md');
   const outRelative = relative(repoPath, outDir).split(sep).join('/') || '.';
+  const languageLine = language === 'zh-CN'
+    ? 'PR 标题和正文必须使用简体中文；代码、命令、路径、标识符和日志原文保持原样。'
+    : 'Write the PR title and body in English; keep code, commands, paths, identifiers, and verbatim logs unchanged.';
   return [
     `这是 ${name} 的 issue loop。以下命令在 Orca 启动的当前仓库 worktree 中执行:`,
     `1. node ${quote(runScript)} triage --repo .`,
@@ -49,18 +58,23 @@ export function buildIssuePrompt({ name, policy, repoPath, outDir = join(repoPat
     '若 select 退出码为 3,直接结束,不要改代码。',
     `否则读 ${quote(`${outRelative}/work.json`)},按 ${quote(loopReference)} 与 ${quote(workReference)} 实现这个 issue:`,
     '分支 -> 门禁 -> PR(第一行 Closes #N)。绝不合并,绝不 push 默认分支。',
+    languageLine,
   ].join('\n');
 }
 
-export function buildRetroPrompt({ name, repoPath }) {
+export function buildRetroPrompt({ name, repoPath, language = 'zh-CN' }) {
   const runScript = join(skillRoot, 'scripts', 'run.mjs');
   const retroReference = join(skillRoot, 'references', 'RETRO.md');
+  const languageLine = language === 'zh-CN'
+    ? 'PR 标题和正文必须使用简体中文；代码、命令、路径和日志原文保持原样。'
+    : 'Write the PR title and body in English; keep code, commands, paths, and verbatim logs unchanged.';
   return [
     `这是 ${name} 的每日复盘 loop。以下命令在 Orca 启动的当前仓库 worktree 中执行:`,
     `node ${quote(runScript)} retro --repo .`,
     `然后按 ${quote(retroReference)} 更新项目记忆文件(默认 memory/LESSONS.md)。`,
     '用分支 + PR 交付(chore(self-loop): retro YYYY-MM-DD)。',
     '没有值得记的教训就说明检查范围并结束,不要硬凑。绝不合并。',
+    languageLine,
   ].join('\n');
 }
 
@@ -144,7 +158,13 @@ function main() {
       existing: issueExisting,
       name: names.issue,
       trigger: issueTrigger,
-      prompt: buildIssuePrompt({ name, policy, repoPath, outDir: settings.outDir }),
+      prompt: buildIssuePrompt({
+        name,
+        policy,
+        repoPath,
+        outDir: settings.outDir,
+        language: settings.language,
+      }),
       provider,
       repo: repoPath,
       timezone,
@@ -162,7 +182,7 @@ function main() {
       existing: retroExisting,
       name: names.retro,
       trigger: retroTrigger,
-      prompt: buildRetroPrompt({ name, repoPath }),
+      prompt: buildRetroPrompt({ name, repoPath, language: settings.language }),
       provider,
       repo: repoPath,
       timezone,

@@ -52,7 +52,9 @@ failure buried in the mistake log.
 
 1. Create `loop/retro-YYYY-MM-DD` from the default branch.
 2. Change only retrospective or memory-standard files.
-3. Open a PR titled `chore(self-loop): retro YYYY-MM-DD`.
+3. Open a PR titled `chore(self-loop): retro YYYY-MM-DD`; write the body in the
+   project `language` (default `zh-CN`), keeping commands and verbatim evidence
+   unchanged.
 4. Explain which rules were added or changed and cite the evidence.
 5. Never merge and never push the default branch.
 

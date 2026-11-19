@@ -20,6 +20,7 @@ import {
   resolveRepo,
   resolveSettings,
 } from './lib.mjs';
+import { normalizeLanguage } from './copy.mjs';
 import { initMemory } from './init-memory.mjs';
 import { discoverVerifierCommands } from './verifier.mjs';
 
@@ -56,6 +57,32 @@ export function detectGithubRepo({ repoRoot, explicit, env = process.env } = {})
   return String(explicit || env.GITHUB_REPOSITORY || repoSlug(repoRoot) || '').trim();
 }
 
+/**
+ * Choose the language for person-facing artifacts. Explicit config and
+ * environment win; otherwise inspect the project's own docs. Chinese is the
+ * default because the loop's primary authoring language is Chinese.
+ */
+export function detectLanguage({
+  repoRoot,
+  explicit,
+  config = loadConfig(repoRoot),
+  env = process.env,
+} = {}) {
+  if (explicit) return normalizeLanguage(explicit);
+  const fromEnv = env.SELF_LOOP_LANGUAGE || env.LOOP_LANGUAGE;
+  if (fromEnv) return normalizeLanguage(fromEnv);
+  if (config.language) return normalizeLanguage(config.language);
+  const files = ['README.md', 'AGENTS.md', 'GLOSSARY.md', 'docs/DESIGN.md'];
+  const text = files
+    .map((file) => (existsSync(join(repoRoot, file)) ? readFileSync(join(repoRoot, file), 'utf8') : ''))
+    .join('\n');
+  const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  const latin = (text.match(/[A-Za-z]/g) || []).length;
+  if (cjk > 40 && cjk >= latin * 0.2) return 'zh-CN';
+  if (latin > 0 && cjk === 0) return 'en';
+  return 'zh-CN';
+}
+
 export function detectExecutor({
   explicit,
   env = process.env,
@@ -86,6 +113,7 @@ export function mergeProjectConfig({
   executor,
   verifierCommands = [],
   memoryDir,
+  language,
 } = {}) {
   const config = JSON.parse(JSON.stringify(existing));
   if (githubRepo) config.githubRepo = githubRepo;
@@ -101,6 +129,7 @@ export function mergeProjectConfig({
   if (memoryDir) {
     config.memory = { ...(config.memory || {}), ...memoryPaths(memoryDir) };
   }
+  if (language) config.language = language;
   return config;
 }
 
@@ -172,6 +201,7 @@ export function setupProject({
   executor,
   memoryDir,
   verifierCommands,
+  language,
   labels = true,
   dryRun = false,
   env = process.env,
@@ -189,6 +219,12 @@ export function setupProject({
     throw new Error('cannot detect GitHub repo: pass --github owner/name or add a GitHub origin remote');
   }
   const resolvedExecutor = executor ?? existing.executor?.command ?? executorDetector({ env });
+  const resolvedLanguage = detectLanguage({
+    repoRoot,
+    explicit: language,
+    config: existing,
+    env,
+  });
   const existingVerifier = Array.isArray(existing.verifier?.commands)
     ? existing.verifier.commands
     : typeof existing.verifier?.commands === 'string' && existing.verifier.commands.trim()
@@ -214,6 +250,7 @@ export function setupProject({
     executor: resolvedExecutor,
     verifierCommands: discovered,
     memoryDir,
+    language: resolvedLanguage,
   });
   const configPath = join(repoRoot, CONFIG_FILE);
   const configChanged = JSON.stringify(existing) !== JSON.stringify(config);
@@ -244,6 +281,7 @@ export function setupProject({
     repoRoot,
     githubRepo: resolvedGithub,
     executor: resolvedExecutor,
+    language: resolvedLanguage,
     verifierCommands: discovered,
     config: {
       path: configPath,
@@ -270,6 +308,7 @@ function printHuman(result) {
   console.log(`[setup] repo: ${result.repoRoot}`);
   console.log(`[setup] github: ${result.githubRepo}`);
   console.log(`[setup] config: ${result.config.changed ? (result.dryRun ? 'would update' : 'updated') : 'unchanged'} ${result.config.relativePath}`);
+  console.log(`[setup] language: ${result.language}`);
   console.log(`[setup] executor: ${result.executor ? JSON.stringify(result.executor) : '(not detected)'}`);
   console.log(`[setup] verifier: ${result.verifierCommands.join(' ; ') || '(not discovered)'}`);
   for (const file of result.memory.created) {
@@ -296,6 +335,7 @@ function main() {
     executor: values.executor,
     memoryDir: values['memory-dir'] || values.dir,
     verifierCommands: values.verify ? [values.verify] : undefined,
+    language: values.language,
     labels: !flags['no-labels'],
     dryRun: Boolean(flags['dry-run']),
   });

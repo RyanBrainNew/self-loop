@@ -48,6 +48,11 @@ node "/skills/self-loop/scripts/run.mjs" router tick --repo .
 The Router then keeps Ticket state, leases, and gates, while Orca supplies the
 worktree and process. The core still has no Orca dependency.
 
+The generated prompts read `language` from the project config (default
+`zh-CN`) and require Chinese PR titles/bodies unless it is set to `en`. To drive
+the Router from events instead of the hourly trigger, use `router post` plus
+`router tick`; see `prompts.md`.
+
 ## Commands
 
 ```bash

@@ -11,6 +11,8 @@
 - [ ] Any check that could not run is marked **Not run** with the reason.
 - [ ] Public behavior, compatibility, security, and data impact were considered.
 - [ ] The pull request explains what changed and what was not verified.
+- [ ] The pull request title and body use the configured `language`; commands,
+      paths, identifiers, and verbatim logs stay unchanged.
 - [ ] No pull request is merged and no default branch is pushed by the loop.
 
 ## Promoted Rules
