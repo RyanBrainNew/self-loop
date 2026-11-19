@@ -8,6 +8,10 @@ deterministic helper.
 Do not make the user hand-write `.self-loop.json`, memorize flags, or run the
 helper themselves.
 
+When the user explicitly invokes the separate `setup-self-loop` skill, follow
+that skill's direct one-shot flow instead: invocation is consent, so do not ask
+for a proposal confirmation.
+
 ## 1. Decide whether setup is needed
 
 Run this flow only when:

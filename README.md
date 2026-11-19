@@ -32,6 +32,17 @@
 
 Magpie 目前没有 `skill add` 命令行；安装入口在 app 的 Library 页面，`library skill` 子命令负责更新、启停和链接方式。
 
+### 显式初始化技能
+
+仓库还提供独立的 `setup-self-loop` 技能。它和 `self-loop` 同仓库，但安装路径不同：
+
+- `self-loop`：仓库根（留空或 `.`）；
+- `setup-self-loop`：`setup-self-loop/`。
+
+先安装 `self-loop`，再安装 `setup-self-loop`。以后只需要显式调用
+`setup-self-loop`，不需要描述配置、确认提案或记命令。它会定位已安装的
+`self-loop`，直接完成配置，只在缺 GitHub 仓库或 executor 时问一个最短问题。
+
 ### 手动安装
 
 ```bash
@@ -253,7 +264,7 @@ CI 在 push 和 PR 上运行 `node --test`。测试覆盖策略/标签/选择、
 
 Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、`router status` 的 `--repo` 冒烟，以及模拟 Magpie 只复制 skill 根目录后的独立运行。
 
-当前测试基线：`47` 个测试全部通过（Node 20+）。
+当前测试基线：`48` 个测试全部通过（Node 20+）。
 
 ## 设计文档
 

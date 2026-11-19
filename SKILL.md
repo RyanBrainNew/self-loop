@@ -64,6 +64,9 @@ Install this repository as a skill (Magpie Library, a collection repository's
 `references/`, `templates/`, and optionally `adapters/` together. Locate scripts
 from the directory containing this file, not from the target project.
 
+For explicit one-shot initialization with no setup conversation, install the
+companion skill from `setup-self-loop/` and invoke `setup-self-loop` directly.
+
 ## Read next
 
 - `references/LOOP.md` - issue-loop workflow and delivery rules.

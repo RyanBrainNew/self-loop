@@ -603,6 +603,17 @@ test('project setup is routed as an agent conversation', () => {
   assert.match(setup, /Only the user's confirmation is required/);
 });
 
+test('setup-self-loop is an explicit, direct-invocation companion skill', () => {
+  const skill = readFileSync(join(repoRoot, 'setup-self-loop', 'SKILL.md'), 'utf8');
+  assert.match(skill, /^name:\s*setup-self-loop$/m);
+  assert.match(skill, /^disable-model-invocation:\s*true$/m);
+  assert.match(skill, /scripts\/setup-project\.mjs/);
+  assert.match(skill, /invoked it, so consent/i);
+  assert.match(skill, /Do not ask for confirmation/);
+  assert.doesNotMatch(skill, /Proceed\?/);
+  assert.match(skill, /--repo \. --json/);
+});
+
 test('Orca adapter prompts call the installed skill scripts, not loop/run.mjs', () => {
   const prompt = buildIssuePrompt({
     name: 'fixture',
