@@ -1,0 +1,16 @@
+{
+  "name": "self-loop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project-agnostic issue and retrospective loop skill",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:skill": "node --test scripts/self-loop.test.mjs",
+    "setup": "node scripts/setup-project.mjs",
+    "init-memory": "node scripts/init-memory.mjs"
+  }
+}

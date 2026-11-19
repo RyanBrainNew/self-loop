@@ -1,15 +1,16 @@
 // Pick (and optionally claim) the single issue this run should implement.
-// Policy comes from the Orca automation prompt / environment, never from code.
+// Policy comes from CLI, environment, or .self-loop.json, never from code.
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import {
   ghJson,
   ineligibleReason,
+  isMain,
   parseArgs,
   parsePolicy,
-  repoSlug,
+  resolveRepo,
   resolveSelfLogin,
+  resolveSettings,
   resolveToken,
   selectCandidate,
 } from './lib.mjs';
@@ -17,7 +18,7 @@ import { collect } from './triage.mjs';
 
 const MAX_AGE_MS = 10 * 60 * 1000;
 
-function loadCached(outDir) {
+export function loadCached(outDir) {
   const file = join(outDir, 'triage.json');
   if (!existsSync(file)) return null;
   if (Date.now() - statSync(file).mtimeMs > MAX_AGE_MS) return null;
@@ -28,10 +29,20 @@ function loadCached(outDir) {
   }
 }
 
-export async function selectOne({ policy, repo, token, selfLogin, ttlMinutes, outDir = '.loop', refresh = false }) {
+export async function selectOne({
+  policy,
+  repoRoot,
+  githubRepo,
+  token,
+  selfLogin,
+  ttlMinutes,
+  outDir,
+  refresh = false,
+}) {
   let state = refresh ? null : loadCached(outDir);
+  if (state && githubRepo && state.repo !== githubRepo) state = null;
   if (!state) {
-    state = await collect({ policy, repo, token, selfLogin, ttlMinutes });
+    state = await collect({ policy, repoRoot, githubRepo, token, selfLogin, ttlMinutes });
   }
 
   const options = { policy, selfLogin, claimTtlMinutes: ttlMinutes };
@@ -49,26 +60,33 @@ export async function selectOne({ policy, repo, token, selfLogin, ttlMinutes, ou
 
 async function main() {
   const { values, flags } = parseArgs(process.argv.slice(2));
-  const policy = parsePolicy(values.policy || process.env.LOOP_POLICY || 'ready-for-agent');
-  const outDir = values.out || '.loop';
+  const repoRoot = resolveRepo({ repo: values.repo });
+  const settings = resolveSettings(repoRoot, {
+    policy: values.policy,
+    claimTtlMinutes: values.ttl,
+    outDir: values.out,
+  });
+  const policy = parsePolicy(settings.policy);
   const token = resolveToken();
-  const repo = values.repo || process.env.GITHUB_REPOSITORY || repoSlug();
-  const selfLogin = values['no-self'] ? '' : await resolveSelfLogin(repo, token);
-  const ttlMinutes = values.ttl ? Number(values.ttl) : undefined;
-  const claim = !flags['no-claim'];
+  if (!settings.githubRepo) {
+    throw new Error('cannot resolve GitHub repo: set githubRepo in .self-loop.json or GITHUB_REPOSITORY');
+  }
 
+  const selfLogin = flags['no-self'] ? '' : await resolveSelfLogin(settings.githubRepo, token);
+  const claim = !flags['no-claim'];
   const { state, candidate } = await selectOne({
     policy,
-    repo,
+    repoRoot,
+    githubRepo: settings.githubRepo,
     token,
     selfLogin,
-    ttlMinutes,
-    outDir,
+    ttlMinutes: settings.claimTtlMinutes,
+    outDir: settings.outDir,
     refresh: flags.refresh || flags['no-json'],
   });
 
-  mkdirSync(outDir, { recursive: true });
-  writeFileSync(join(outDir, 'triage.json'), `${JSON.stringify(state, null, 2)}\n`);
+  mkdirSync(settings.outDir, { recursive: true });
+  writeFileSync(join(settings.outDir, 'triage.json'), `${JSON.stringify(state, null, 2)}\n`);
 
   if (!candidate) {
     console.log(`[select] no eligible issue for policy ${policy.raw}`);
@@ -78,6 +96,7 @@ async function main() {
   const claimState = {
     number: candidate.number,
     title: candidate.title,
+    body: candidate.body || '',
     url: candidate.url,
     labels: candidate.labels,
     policy: policy.raw,
@@ -97,23 +116,22 @@ async function main() {
       process.exit(2);
     }
   } else if (claim && !selfLogin) {
-    console.error('[select] cannot claim: unknown GitHub login (set LOOP_SELF_LOGIN)');
+    console.error('[select] cannot claim: unknown GitHub login (set SELF_LOOP_SELF_LOGIN)');
     process.exit(2);
   }
 
-  writeFileSync(join(outDir, 'work.json'), `${JSON.stringify(claimState, null, 2)}\n`);
+  writeFileSync(join(settings.outDir, 'work.json'), `${JSON.stringify(claimState, null, 2)}\n`);
 
   if (flags.json) {
     console.log(JSON.stringify(claimState, null, 2));
   } else {
     console.log(`[select] #${candidate.number} ${candidate.title}`);
     console.log(`[select] policy=${policy.raw} labels=${candidate.labels.join(',') || '-'} claimedBy=${claimState.claimedBy}`);
-    console.log(`[select] wrote ${join(outDir, 'work.json')}`);
+    console.log(`[select] wrote ${join(settings.outDir, 'work.json')}`);
   }
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     console.error(`[select] ${error.message}`);
     process.exit(2);
