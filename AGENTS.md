@@ -13,6 +13,7 @@ document; detailed workflows live in `references/`.
 - `references/` - workflow, memory, and policy documentation.
 - `templates/memory/` - generic project memory templates.
 - `adapters/orca/` - optional Orca setup, prompts, and precheck.
+- `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
 
 ## Invariants

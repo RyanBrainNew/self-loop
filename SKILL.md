@@ -59,7 +59,7 @@ memory or explicit choices.
 Default memory paths are `memory/LESSONS.md`, `memory/code-standards.md`, and
 `memory/DECISIONS.md`, all relative to the target repo.
 
-Install this repository as a skill (Magpie Library, a collection repository's
+Install this repository as a skill (a skill library, a collection repository's
 `skills/self-loop` path, or a manual clone). Keep `SKILL.md`, `scripts/`,
 `references/`, `templates/`, and optionally `adapters/` together. Locate scripts
 from the directory containing this file, not from the target project.

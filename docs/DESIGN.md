@@ -396,9 +396,9 @@ Target repository and packet paths.
 The skill is installed outside the target project. A target project contains
 only `.self-loop.json`, `memory/`, and the ignored `.loop/` directory.
 
-Magpie can install the repository root because `SKILL.md` is at the root. A
-collection repository uses `skills/self-loop`. The installed skill must retain
-`SKILL.md`, `scripts/`, `references/`, `templates/`, and `adapters/`.
+A skill manager can install the repository root because `SKILL.md` is at the
+root. A collection repository uses `skills/self-loop`. The installed skill must
+retain `SKILL.md`, `scripts/`, `references/`, `templates/`, and `adapters/`.
 
 Migration from an old `loop/` directory:
 

@@ -19,9 +19,8 @@ first directory that contains `scripts/setup-project.mjs`:
 
 1. `$SELF_LOOP_SKILL`, when set;
 2. `$SETUP_SKILL_DIR/../self-loop`;
-3. `~/.config/magpie/library/skills/self-loop`;
-4. `~/.codex/skills/self-loop`;
-5. `~/.claude/skills/self-loop`.
+3. `~/.codex/skills/self-loop`;
+4. `~/.claude/skills/self-loop`.
 
 If none exists, stop and say only:
 

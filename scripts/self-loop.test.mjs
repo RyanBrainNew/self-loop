@@ -1067,7 +1067,7 @@ test('router status runs through run.mjs with --repo from outside the target', (
   assert.deepEqual(state.tickets, {});
 });
 
-test('a Magpie-style copy of the skill root runs against a separate target repo', () => {
+test('a copied skill root runs against a separate target repo', () => {
   const skill = mkdtempSync(join(tmpdir(), 'self-loop-skill-'));
   for (const item of ['SKILL.md', 'package.json', 'scripts', 'references', 'templates']) {
     cpSync(join(repoRoot, item), join(skill, item), { recursive: true });
