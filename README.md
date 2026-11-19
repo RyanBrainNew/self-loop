@@ -268,3 +268,8 @@ Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽�
 - `docs/DESIGN.md`：Router 控制面、角色、生命周期、Context Packet / Result Envelope、验证和 rollout。
 - `docs/adr/`：已接受的架构决策（scheduler-agnostic core、installable layout、Router control plane、independent verification、context protocol）。
 - `GLOSSARY.md`：统一术语，避免把 skill root、target repository、Ticket、Claim、Lease 混用。
+
+## License
+
+本项目采用 [Apache License 2.0](LICENSE) 开源协议。
+Copyright 2026 self-loop contributors.
