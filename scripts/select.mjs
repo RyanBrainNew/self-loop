@@ -8,11 +8,11 @@ import {
   isMain,
   parseArgs,
   parsePolicy,
+  pickCandidates,
   resolveRepo,
   resolveSelfLogin,
   resolveSettings,
   resolveToken,
-  selectCandidate,
 } from './lib.mjs';
 import { collect } from './triage.mjs';
 
@@ -29,7 +29,7 @@ export function loadCached(outDir) {
   }
 }
 
-export async function selectOne({
+export async function selectCandidates({
   policy,
   repoRoot,
   githubRepo,
@@ -38,6 +38,9 @@ export async function selectOne({
   ttlMinutes,
   outDir,
   refresh = false,
+  limit = 1,
+  exclude = new Set(),
+  prefer = [],
 }) {
   let state = refresh ? null : loadCached(outDir);
   if (state && githubRepo && state.repo !== githubRepo) state = null;
@@ -50,12 +53,17 @@ export async function selectOne({
     ...issue,
     ineligibleReason: ineligibleReason(issue, options),
   }));
-  const candidate = selectCandidate(issues, options);
+  const candidates = pickCandidates(issues, options, { limit, exclude, prefer });
   state.issues = issues;
   state.policy = policy;
   state.selfLogin = selfLogin;
-  state.candidate = candidate?.number || null;
-  return { state, candidate };
+  state.candidate = candidates[0]?.number || null;
+  return { state, candidates };
+}
+
+export async function selectOne(options = {}) {
+  const { state, candidates } = await selectCandidates({ ...options, limit: 1 });
+  return { state, candidate: candidates[0] || null };
 }
 
 async function main() {
@@ -100,6 +108,7 @@ async function main() {
     url: candidate.url,
     labels: candidate.labels,
     policy: policy.raw,
+    language: settings.language,
     repo: state.repo,
     claimedBy: claim ? selfLogin : '(dry-run)',
     claimedAt: new Date().toISOString(),

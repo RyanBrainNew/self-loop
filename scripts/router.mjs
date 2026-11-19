@@ -1,7 +1,8 @@
 // Deterministic control plane for self-loop.
 // It owns Ticket state, claims, leases, context packets, gates, and dispatch.
-// It never writes business code and never merges.
-import { execFileSync, spawnSync } from 'node:child_process';
+// It also owns the durable inbox that wakes it. It never writes business code
+// and never merges.
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   closeSync,
   existsSync,
@@ -22,13 +23,23 @@ import {
   labelNames,
   parseArgs,
   parsePolicy,
+  pathInRepo,
   repoRelativePath,
   resolveRepo,
   resolveSelfLogin,
   resolveSettings,
   resolveToken,
 } from './lib.mjs';
-import { selectOne } from './select.mjs';
+import { pick } from './copy.mjs';
+import {
+  appendEvent,
+  inboxSummary,
+  loadInbox,
+  pendingEventTickets,
+  pendingEvents,
+  saveInbox,
+} from './inbox.mjs';
+import { selectCandidates } from './select.mjs';
 import { discoverVerifierCommands, runVerifier } from './verifier.mjs';
 
 export const ROUTER_STATE_VERSION = 1;
@@ -45,6 +56,8 @@ export const RESULT_STATES = new Set([
 ]);
 
 const ACTIVE_STATES = new Set(['queued', 'claimed', 'working', 'verifying', 'blocked', 'failed', 'awaiting_review']);
+const OCCUPYING_STATES = new Set(['queued', 'claimed', 'working', 'verifying']);
+const RUNNING_STATES = new Set(['claimed', 'working', 'verifying']);
 const TERMINAL_STATES = new Set(['done', 'dropped']);
 const skillRoot = fileURLToPath(new URL('..', import.meta.url));
 
@@ -146,13 +159,29 @@ export async function withStateLock(settings, fn) {
 }
 
 export function activeTicket(state) {
-  if (state.activeTicket !== null && state.tickets[String(state.activeTicket)]) {
-    const ticket = state.tickets[String(state.activeTicket)];
-    if (ACTIVE_STATES.has(ticket.state)) return ticket;
-  }
+  return activeTickets(state)[0] || null;
+}
+
+export function activeTickets(state) {
   return Object.values(state.tickets)
     .filter((ticket) => ACTIVE_STATES.has(ticket.state))
-    .sort((a, b) => a.number - b.number)[0] || null;
+    .sort((a, b) => a.number - b.number);
+}
+
+export function pendingTickets(state) {
+  return Object.values(state.tickets)
+    .filter((ticket) => OCCUPYING_STATES.has(ticket.state))
+    .sort((a, b) => a.number - b.number);
+}
+
+export function runningTickets(state) {
+  return Object.values(state.tickets)
+    .filter((ticket) => RUNNING_STATES.has(ticket.state))
+    .sort((a, b) => a.number - b.number);
+}
+
+function syncActiveTicket(state) {
+  state.activeTicket = activeTickets(state)[0]?.number ?? null;
 }
 
 function ticketPath(settings, ticket) {
@@ -227,6 +256,7 @@ export function createTicket(candidate, settings, now = Date.now()) {
     url: candidate.url || '',
     labels: labelNames(candidate.labels || []),
     repo: settings.githubRepo || '',
+    language: settings.language,
     state: 'queued',
     attempts: 0,
     maxAttempts: settings.router.maxAttempts,
@@ -275,17 +305,33 @@ export function extractAcceptance(body = '') {
 export function buildTaskCard({ ticket, settings } = {}) {
   const acceptance = extractAcceptance(ticket.body);
   const commands = discoverVerifierCommands({ repoRoot: ticket.repoRoot || settings.repoRoot, settings });
+  const language = settings.language || ticket.language || 'zh-CN';
   return {
     ticket: ticket.number,
     goal: ticket.title,
+    language,
     inScope: ticket.inScope || ['**'],
     outOfScope: ticket.outOfScope || [],
     acceptance,
     requiredChecks: settings.verifier.commands?.length ? settings.verifier.commands : commands,
     risk: ticket.risk || '',
-    rollback: ticket.rollback || 'Close the branch and pull request.',
-    assumptions: acceptance.length ? [] : ['No explicit acceptance criteria were found in the Issue.'],
-    blockedReason: acceptance.length ? null : 'No concrete, verifiable acceptance criteria were found.',
+    rollback: ticket.rollback || pick(
+      language,
+      'Close the branch and pull request.',
+      '关闭分支和 PR。',
+    ),
+    assumptions: acceptance.length ? [] : [
+      pick(
+        language,
+        'No explicit acceptance criteria were found in the Issue.',
+        'Issue 中没有找到明确的验收标准。',
+      ),
+    ],
+    blockedReason: acceptance.length ? null : pick(
+      language,
+      'No concrete, verifiable acceptance criteria were found.',
+      '没有找到具体、可验证的验收标准。',
+    ),
   };
 }
 
@@ -339,6 +385,7 @@ export function buildContextPacket({
     version: 1,
     asOf: nowIso(now),
     role,
+    language: settings.language,
     repo: projectFacts(repoRoot, settings),
     ticket: {
       number: ticket.number,
@@ -357,6 +404,7 @@ export function buildContextPacket({
     constraints: {
       noMerge: true,
       noDefaultPush: true,
+      language: settings.language,
       maxAttempts: settings.router.maxAttempts,
       leaseMinutes: settings.router.leaseMinutes,
     },
@@ -436,19 +484,26 @@ function addArtifacts(ticket, refs = []) {
   }
 }
 
-export function buildIssueStatusComment(ticket) {
+export function buildIssueStatusComment(ticket, language = 'zh-CN') {
   const lines = [
     STATUS_MARKER,
-    `## self-loop status: \`${ticket.state}\``,
+    pick(language, `## self-loop status: \`${ticket.state}\``, `## self-loop 状态：\`${ticket.state}\``),
     '',
     `- Ticket: #${ticket.number} ${ticket.title || ''}`.trimEnd(),
-    `- Attempt: ${ticket.attempts || 0}/${ticket.maxAttempts || 2}`,
+    `- ${pick(language, 'Attempt', '尝试')}: ${ticket.attempts || 0}/${ticket.maxAttempts || 2}`,
   ];
-  if (ticket.branch) lines.push(`- Branch: \`${ticket.branch}\``);
-  if (ticket.pr) lines.push(`- Pull request: #${ticket.pr}`);
-  if (ticket.verification?.status) lines.push(`- Independent verification: \`${ticket.verification.status}\``);
+  if (ticket.branch) lines.push(`- ${pick(language, 'Branch', '分支')}: \`${ticket.branch}\``);
+  if (ticket.pr) lines.push(`- ${pick(language, 'Pull request', 'PR')}: #${ticket.pr}`);
+  if (ticket.verification?.status) {
+    lines.push(`- ${pick(language, 'Independent verification', '独立验证')}: \`${ticket.verification.status}\``);
+  }
+  if (ticket.worker?.pid) lines.push(`- ${pick(language, 'Worker PID', 'Worker 进程')}: \`${ticket.worker.pid}\``);
   if (ticket.humanQuestion) lines.push('', `> ${ticket.humanQuestion}`);
-  lines.push('', '_This comment is maintained by self-loop; a person still decides whether to merge._');
+  lines.push('', pick(
+    language,
+    '_This comment is maintained by self-loop; a person still decides whether to merge._',
+    '_此评论由 self-loop 维护；是否合并仍由人决定。_',
+  ));
   return lines.join('\n');
 }
 
@@ -460,7 +515,7 @@ export async function publishIssueStatus({ settings, ticket, token = resolveToke
   if (!settings.router.comments) return { status: 'disabled' };
   if (!ticket?.number || !settings.githubRepo) return { status: 'skipped' };
   if (!token) return { status: 'no-token' };
-  const body = buildIssueStatusComment(ticket);
+  const body = buildIssueStatusComment(ticket, settings.language);
   const comments = await ghJson(settings.githubRepo, `/issues/${ticket.number}/comments?per_page=100`, token);
   const existing = Array.isArray(comments) ? comments.find((comment) => String(comment.body || '').includes(STATUS_MARKER)) : null;
   if (existing) {
@@ -477,31 +532,41 @@ export async function publishIssueStatus({ settings, ticket, token = resolveToke
   return { status: 'created', comment: created.id };
 }
 
-export function applyResultToTicket(ticket, result) {
+export function applyResultToTicket(ticket, result, language = 'zh-CN') {
   ticket.lastResult = result;
   ticket.attempts = Math.max(ticket.attempts || 0, result.attempt || 0);
   ticket.pr = result.pr || ticket.pr || null;
   ticket.prHead = result.prHead || ticket.prHead || null;
   addArtifacts(ticket, result.artifactRefs);
-  ticket.lease = null;
   ticket.updatedAt = nowIso();
   if (result.state === 'ready') {
+    ticket.lease = null;
     ticket.state = 'verifying';
   } else if (result.state === 'blocked' || result.state === 'timeout' || result.state === 'undeliverable') {
+    ticket.lease = null;
     ticket.state = 'blocked';
-    ticket.humanQuestion = result.clarify?.question || result.humanText || 'The Worker could not continue.';
+    ticket.humanQuestion = result.clarify?.question
+      || result.humanText
+      || pick(language, 'The Worker could not continue.', 'Worker 无法继续。');
   } else if (result.state === 'failed') {
+    ticket.lease = null;
     if ((ticket.attempts || 0) < (ticket.maxAttempts || 2)) {
       ticket.state = 'queued';
       ticket.humanQuestion = null;
     } else {
       ticket.state = 'blocked';
-      ticket.humanQuestion = result.clarify?.question || 'Retry budget exhausted; review and run router recover.';
+      ticket.humanQuestion = result.clarify?.question || pick(
+        language,
+        'Retry budget exhausted; review and run router recover.',
+        '重试次数已耗尽；请检查后运行 router recover。',
+      );
     }
   } else if (result.state === 'dropped') {
+    ticket.lease = null;
     ticket.state = 'done';
     ticket.humanQuestion = null;
   } else {
+    // progress/waiting: the Attempt is still alive and keeps its lease.
     ticket.state = 'working';
   }
   return ticket;
@@ -571,6 +636,7 @@ export function prepareDispatch({ repoRoot, settings, state, ticket, now = Date.
   const artifact = artifactDir(settings, ticket);
   mkdirSync(artifact, { recursive: true });
   ticket.resultPath = join(artifact, 'result.json');
+  rmSync(ticket.resultPath, { force: true });
   const paths = writeTicketContext({ repoRoot, settings, ticket, taskCard });
   ticket.updatedAt = nowIso(now);
   saveTicket(settings, ticket);
@@ -578,7 +644,49 @@ export function prepareDispatch({ repoRoot, settings, state, ticket, now = Date.
   return { blocked: false, taskCard, worktree, paths };
 }
 
-export function executeDispatch({
+function dispatchEnv({ repoRoot, settings, ticket, prepared }) {
+  return {
+    ...process.env,
+    SELF_LOOP_REPO: repoRoot,
+    SELF_LOOP_TICKET: String(ticket.number),
+    ISSUE_NUMBER: String(ticket.number),
+    SELF_LOOP_LANGUAGE: settings.language,
+    SELF_LOOP_TASK_CARD: join(artifactRoot(settings, ticket), 'task-card.json'),
+    SELF_LOOP_CONTEXT: prepared.paths.workerPath,
+    SELF_LOOP_RESULT: ticket.resultPath,
+  };
+}
+
+function applyDispatchExit({ settings, state, ticket, result }) {
+  if (existsSync(ticket.resultPath)) {
+    const envelope = validateResultEnvelope(readJson(ticket.resultPath, null));
+    applyResultToTicket(ticket, envelope, settings.language);
+    saveTicket(settings, ticket);
+    saveState(settings, state);
+    return { dispatched: true, status: ticket.state, result: envelope };
+  }
+
+  if (result.error || result.status !== 0) {
+    applyResultToTicket(ticket, {
+      ticket: ticket.number,
+      attempt: ticket.attempts,
+      state: 'failed',
+      humanText: result.error?.message || `executor exited with ${result.status}`,
+      artifactRefs: [],
+      error: { code: 'EXECUTOR_FAILED', userCause: 'Worker execution failed', userAction: 'Review the log and retry', system: false },
+      clarify: null,
+      notify: true,
+      asOf: nowIso(),
+    }, settings.language);
+    saveTicket(settings, ticket);
+    saveState(settings, state);
+    return { dispatched: true, status: ticket.state, error: result.error?.message || `exit ${result.status}` };
+  }
+
+  return { dispatched: true, status: 'working', note: 'executor exited without a result envelope' };
+}
+
+export async function executeDispatch({
   repoRoot,
   settings,
   state,
@@ -599,48 +707,68 @@ export function executeDispatch({
     return { dispatched: false, status: 'executor-not-configured', taskCard: prepared.taskCard };
   }
 
-  const env = {
-    ...process.env,
-    SELF_LOOP_REPO: repoRoot,
-    SELF_LOOP_TICKET: String(ticket.number),
-    ISSUE_NUMBER: String(ticket.number),
-    SELF_LOOP_TASK_CARD: join(artifactRoot(settings, ticket), 'task-card.json'),
-    SELF_LOOP_CONTEXT: prepared.paths.workerPath,
-    SELF_LOOP_RESULT: ticket.resultPath,
-  };
+  const env = dispatchEnv({ repoRoot, settings, ticket, prepared });
+  if (settings.router.dispatchMode === 'background') {
+    const stdoutPath = join(artifactDir(settings, ticket), 'worker.stdout.txt');
+    const stderrPath = join(artifactDir(settings, ticket), 'worker.stderr.txt');
+    const stdout = openSync(stdoutPath, 'a');
+    const stderr = openSync(stderrPath, 'a');
+    let child;
+    try {
+      child = spawn(invocation.file, invocation.args, {
+        cwd: prepared.worktree,
+        env,
+        stdio: ['ignore', stdout, stderr],
+        shell: invocation.shell,
+        detached: true,
+        windowsHide: true,
+      });
+    } catch (error) {
+      closeSync(stdout);
+      closeSync(stderr);
+      ticket.attempts = Math.max(0, (ticket.attempts || 0) - 1);
+      ticket.state = 'queued';
+      ticket.lease = null;
+      ticket.updatedAt = nowIso();
+      saveTicket(settings, ticket);
+      saveState(settings, state);
+      return { dispatched: false, status: 'executor-failed', error: error.message };
+    }
+    const started = await new Promise((resolve) => {
+      child.once('spawn', () => resolve(true));
+      child.once('error', (error) => resolve(error));
+    });
+    closeSync(stdout);
+    closeSync(stderr);
+    if (started !== true) {
+      ticket.attempts = Math.max(0, (ticket.attempts || 0) - 1);
+      ticket.state = 'queued';
+      ticket.lease = null;
+      ticket.updatedAt = nowIso();
+      saveTicket(settings, ticket);
+      saveState(settings, state);
+      return { dispatched: false, status: 'executor-failed', error: started?.message || 'spawn failed' };
+    }
+    child.unref();
+    ticket.worker = {
+      pid: child.pid,
+      startedAt: nowIso(),
+      stdout: repoRelativePath(repoRoot, stdoutPath),
+      stderr: repoRelativePath(repoRoot, stderrPath),
+    };
+    ticket.updatedAt = nowIso();
+    saveTicket(settings, ticket);
+    saveState(settings, state);
+    return { dispatched: true, status: 'working', background: true, pid: child.pid };
+  }
+
   const result = spawnSync(invocation.file, invocation.args, {
     cwd: prepared.worktree,
     env,
     stdio: 'inherit',
     shell: invocation.shell,
   });
-
-  if (existsSync(ticket.resultPath)) {
-    const envelope = validateResultEnvelope(readJson(ticket.resultPath, null));
-    applyResultToTicket(ticket, envelope);
-    saveTicket(settings, ticket);
-    saveState(settings, state);
-    return { dispatched: true, status: ticket.state, result: envelope };
-  }
-
-  if (result.error || result.status !== 0) {
-    applyResultToTicket(ticket, {
-      ticket: ticket.number,
-      attempt: ticket.attempts,
-      state: 'failed',
-      humanText: result.error?.message || `executor exited with ${result.status}`,
-      artifactRefs: [],
-      error: { code: 'EXECUTOR_FAILED', userCause: 'Worker execution failed', userAction: 'Review the log and retry', system: false },
-      clarify: null,
-      notify: true,
-      asOf: nowIso(),
-    });
-    saveTicket(settings, ticket);
-    saveState(settings, state);
-    return { dispatched: true, status: ticket.state, error: result.error?.message || `exit ${result.status}` };
-  }
-
-  return { dispatched: true, status: 'working', note: 'executor exited without a result envelope' };
+  return applyDispatchExit({ settings, state, ticket, result });
 }
 
 export function verifyTicket({ repoRoot, settings, state, ticket, keep = false } = {}) {
@@ -656,11 +784,19 @@ export function verifyTicket({ repoRoot, settings, state, ticket, keep = false }
     ticket.humanQuestion = null;
   } else if (verification.status === 'human_review') {
     ticket.state = 'blocked';
-    ticket.humanQuestion = 'Independent verification could not decide; please review the evidence.';
+    ticket.humanQuestion = pick(
+      settings.language,
+      'Independent verification could not decide; please review the evidence.',
+      '独立验证无法给出结论；请检查验证证据。',
+    );
   } else {
     ticket.state = (ticket.attempts || 0) < (ticket.maxAttempts || 2) ? 'queued' : 'blocked';
     ticket.humanQuestion = ticket.state === 'blocked'
-      ? 'Retry budget exhausted after verification failure; run router recover.'
+      ? pick(
+          settings.language,
+          'Retry budget exhausted after verification failure; run router recover.',
+          '验证失败且重试次数已耗尽；请运行 router recover。',
+        )
       : null;
   }
   ticket.updatedAt = nowIso();
@@ -713,7 +849,11 @@ export function expireTicketIfNeeded({
   ticket.updatedAt = nowIso(now);
   if (reasons.length > 0) {
     ticket.state = 'blocked';
-    ticket.humanQuestion = `Lease expired: ${reasons.join('; ')}. Review the worktree, then run router recover.`;
+    ticket.humanQuestion = pick(
+      settings.language,
+      `Lease expired: ${reasons.join('; ')}. Review the worktree, then run router recover.`,
+      `租约已过期：${reasons.join('；')}。请检查 worktree 后运行 router recover。`,
+    );
     saveTicket(settings, ticket);
     saveState(settings, state);
     return { effect: 'blocked', ticket, reasons };
@@ -724,6 +864,183 @@ export function expireTicketIfNeeded({
   saveTicket(settings, ticket);
   saveState(settings, state);
   return { effect: 'requeued', ticket, reasons };
+}
+
+/**
+ * A Worker may write its Result Envelope after the dispatching process has
+ * returned. Every tick applies any completed envelope it finds, so an event or
+ * the next scheduled tick can move the Ticket forward without polling GitHub.
+ */
+export function collectCompletedResults({ repoRoot, settings, state, now = Date.now() } = {}) {
+  const applied = [];
+  for (const ticket of Object.values(state.tickets)) {
+    if (!['claimed', 'working'].includes(ticket.state)) continue;
+    if (!ticket.resultPath || !existsSync(ticket.resultPath)) continue;
+    let envelope;
+    try {
+      envelope = validateResultEnvelope(readJson(ticket.resultPath, null));
+    } catch (error) {
+      applied.push({ number: ticket.number, status: 'invalid', error: error.message });
+      continue;
+    }
+    if (envelope.ticket !== ticket.number) {
+      applied.push({ number: ticket.number, status: 'invalid', error: `result is for #${envelope.ticket}` });
+      continue;
+    }
+    applyResultToTicket(ticket, envelope, settings.language);
+    saveTicket(settings, ticket);
+    applied.push({ number: ticket.number, status: 'applied', state: ticket.state, asOf: nowIso(now) });
+  }
+  if (applied.some((item) => item.status === 'applied')) {
+    syncActiveTicket(state);
+    saveState(settings, state);
+  }
+  return applied;
+}
+
+function ticketForEvent(state, event) {
+  if (event.ticket) {
+    const ticket = state.tickets[String(event.ticket)];
+    if (ticket) return ticket;
+  }
+  const payload = event.payload || {};
+  const prNumber = Number(payload.pull_request?.number || payload.pr || 0);
+  if (prNumber) {
+    return Object.values(state.tickets).find((ticket) => Number(ticket.pr) === prNumber) || null;
+  }
+  return null;
+}
+
+function resultEnvelopeForEvent({ repoRoot, ticket, event }) {
+  const payload = event.payload || {};
+  if (payload.ticket && payload.state) {
+    return validateResultEnvelope(payload);
+  }
+  if (payload.result && typeof payload.result === 'object') {
+    return validateResultEnvelope(payload.result);
+  }
+  if (payload.resultPath) {
+    const file = pathInRepo(repoRoot, payload.resultPath, 'resultPath');
+    return validateResultEnvelope(readJson(file, null));
+  }
+  if (ticket?.resultPath && existsSync(ticket.resultPath)) {
+    return validateResultEnvelope(readJson(ticket.resultPath, null));
+  }
+  return null;
+}
+
+function applyInboxEvent({ repoRoot, settings, state, event }) {
+  const ticket = ticketForEvent(state, event);
+  const payload = event.payload || {};
+
+  if (event.type === 'issue') {
+    if (!ticket) return { outcome: 'no-ticket' };
+    if (event.action === 'closed' && !TERMINAL_STATES.has(ticket.state)) {
+      ticket.state = payload.issue?.state_reason === 'not_planned' ? 'dropped' : 'done';
+      ticket.lease = null;
+      ticket.humanQuestion = null;
+      ticket.updatedAt = nowIso();
+      saveTicket(settings, ticket);
+      return { outcome: 'closed', ticket };
+    }
+    return { outcome: 'priority', ticket };
+  }
+
+  if (event.type === 'pull_request') {
+    const pr = payload.pull_request || payload;
+    if (!ticket) return { outcome: 'no-ticket' };
+    ticket.pr = Number(pr.number || event.ticket || ticket.pr) || ticket.pr;
+    ticket.prHead = pr.head?.sha || ticket.prHead;
+    const sameBranch = ticket.branch && pr.head?.ref === ticket.branch;
+    if (['queued', 'claimed'].includes(ticket.state) && !sameBranch) {
+      ticket.state = 'blocked';
+      ticket.humanQuestion = pick(
+        settings.language,
+        `PR #${ticket.pr} already exists for this Issue; confirm whether the loop should continue.`,
+        `这个 Issue 已有 PR #${ticket.pr}；请确认 loop 是否还要继续。`,
+      );
+    }
+    if (event.action === 'closed' && !TERMINAL_STATES.has(ticket.state)) {
+      ticket.state = pr.merged ? 'done' : 'dropped';
+      ticket.lease = null;
+      ticket.humanQuestion = null;
+    }
+    ticket.updatedAt = nowIso();
+    saveTicket(settings, ticket);
+    return { outcome: 'pr-updated', ticket };
+  }
+
+  if (event.type === 'result' || event.type === 'worker') {
+    const envelope = resultEnvelopeForEvent({ repoRoot, ticket, event });
+    if (!envelope) return { outcome: 'no-result', ticket };
+    const target = state.tickets[String(envelope.ticket)] || ticket;
+    if (!target) throw new Error(`unknown Ticket #${envelope.ticket}`);
+    applyResultToTicket(target, envelope, settings.language);
+    saveTicket(settings, target);
+    return { outcome: 'result-applied', ticket: target };
+  }
+
+  if (event.type === 'recover') {
+    if (!ticket) return { outcome: 'no-ticket' };
+    recoverTicket({ settings, state, ticket });
+    return { outcome: 'recovered', ticket };
+  }
+
+  if (event.type === 'clean') {
+    if (!ticket) return { outcome: 'no-ticket' };
+    if (!TERMINAL_STATES.has(ticket.state)) {
+      throw new Error(`refusing to clean a non-terminal Ticket #${ticket.number}`);
+    }
+    cleanTicketWorktree({ repoRoot, settings, ticket });
+    return { outcome: 'cleaned', ticket };
+  }
+
+  if (event.type === 'control' || event.type === 'manual') {
+    if (event.action === 'recover' && ticket) {
+      recoverTicket({ settings, state, ticket });
+      return { outcome: 'recovered', ticket };
+    }
+    if (event.action === 'clean' && ticket) {
+      if (!TERMINAL_STATES.has(ticket.state)) {
+        throw new Error(`refusing to clean a non-terminal Ticket #${ticket.number}`);
+      }
+      cleanTicketWorktree({ repoRoot, settings, ticket });
+      return { outcome: 'cleaned', ticket };
+    }
+    return { outcome: 'ack', ticket };
+  }
+
+  // schedule and verify are wake-ups: the main tick loop re-evaluates state.
+  return { outcome: 'ack', ticket };
+}
+
+/**
+ * Mark every pending event handled. One bad event records its error and does
+ * not stop later events; a person can repost it with a new id.
+ */
+export function drainInbox({ repoRoot, settings, state, now = Date.now() } = {}) {
+  const inbox = loadInbox(settings);
+  const pending = pendingEvents(inbox);
+  const results = [];
+  for (const event of pending) {
+    try {
+      const result = applyInboxEvent({ repoRoot, settings, state, event });
+      event.handledAt = nowIso(now);
+      event.outcome = result.outcome || 'ok';
+      results.push({ id: event.id, type: event.type, ...result, ticket: result.ticket?.number ?? null });
+    } catch (error) {
+      event.handledAt = nowIso(now);
+      event.outcome = 'error';
+      event.error = error.message;
+      results.push({ id: event.id, type: event.type, outcome: 'error', error: error.message });
+    }
+  }
+  if (pending.length > 0) {
+    syncActiveTicket(state);
+    saveState(settings, state);
+    saveInbox(settings, inbox);
+  }
+  return { pending: pending.length, results, inbox };
 }
 
 export function cleanTicketWorktree({ repoRoot, settings, ticket, all = false } = {}) {
@@ -746,44 +1063,140 @@ export async function tickRouter({
   repoRoot,
   settings,
   candidate = null,
+  candidates = null,
   dryRun = false,
   now = Date.now(),
 } = {}) {
   return withStateLock(settings, async () => {
     const state = loadState(settings);
-    let ticket = activeTicket(state);
-    if (!ticket && candidate) {
-      if (dryRun) {
-        const preview = createTicket(candidate, settings, now);
-        const taskCard = buildTaskCard({ ticket: { ...preview, repoRoot }, settings });
-        return { status: taskCard.blockedReason ? 'blocked' : 'dry-run', ticket: preview, taskCard };
-      }
-      ticket = createTicket(candidate, settings, now);
-      state.tickets[String(ticket.number)] = ticket;
-      state.activeTicket = ticket.number;
-      saveTicket(settings, ticket);
-      saveState(settings, state);
+    const selected = [];
+    for (const item of [...(candidates || []), ...(candidate ? [candidate] : [])]) {
+      if (!item) continue;
+      const number = Number(item.number);
+      if (!selected.some((existing) => Number(existing.number) === number)) selected.push(item);
     }
-    if (!ticket) return { status: 'idle', state };
+    const current = activeTicket(state);
 
     if (dryRun) {
-      const taskCard = buildTaskCard({ ticket: { ...ticket, repoRoot }, settings });
-      return { status: taskCard.blockedReason ? 'blocked' : 'dry-run', ticket, taskCard };
+      const preview = current || (selected[0] ? createTicket(selected[0], settings, now) : null);
+      if (!preview) return { status: 'idle', ticket: null, tickets: [], state };
+      const taskCard = buildTaskCard({ ticket: { ...preview, repoRoot }, settings });
+      return {
+        status: taskCard.blockedReason ? 'blocked' : 'dry-run',
+        ticket: preview,
+        tickets: [preview],
+        taskCard,
+        state,
+      };
     }
-    const expiration = expireTicketIfNeeded({ repoRoot, settings, state, ticket, now });
-    if (expiration.effect === 'blocked') {
-      return { status: 'blocked', reason: ticket.humanQuestion, ticket, state };
+
+    const changed = new Map();
+    const remember = (ticket) => {
+      if (ticket) changed.set(ticket.number, ticket);
+    };
+
+    const finishedThisTick = new Set();
+    const inbox = drainInbox({ repoRoot, settings, state, now });
+    for (const result of inbox.results) {
+      if (result.ticket) {
+        remember(state.tickets[String(result.ticket)]);
+        if (result.outcome === 'result-applied') finishedThisTick.add(result.ticket);
+      }
     }
-    if (ticket.state === 'verifying') {
-      const verification = verifyTicket({ repoRoot, settings, state, ticket });
-      return { status: verification.status, ticket, state };
+
+    const completed = collectCompletedResults({ repoRoot, settings, state, now });
+    for (const item of completed) {
+      remember(state.tickets[String(item.number)]);
+      if (item.status === 'applied') finishedThisTick.add(item.number);
     }
-    if (ticket.state === 'queued' || ticket.state === 'claimed') {
-      const prepared = prepareDispatch({ repoRoot, settings, state, ticket, now });
-      const dispatched = executeDispatch({ repoRoot, settings, state, ticket, prepared, dryRun });
-      return { ...dispatched, ticket, state };
+
+    const expired = [];
+    for (const ticket of activeTickets(state)) {
+      if (!leaseExpired(ticket, now)) continue;
+      const result = expireTicketIfNeeded({ repoRoot, settings, state, ticket, now });
+      if (result.effect !== 'none') {
+        expired.push({ number: ticket.number, effect: result.effect });
+        remember(ticket);
+      }
     }
-    return { status: ticket.state, ticket, state };
+
+    const verification = [];
+    const verified = new Set();
+    for (const ticket of Object.values(state.tickets)) {
+      if (ticket.state !== 'verifying') continue;
+      const result = verifyTicket({ repoRoot, settings, state, ticket });
+      verification.push({ number: ticket.number, status: result.status });
+      verified.add(ticket.number);
+      remember(ticket);
+    }
+
+    const created = [];
+    for (const item of selected) {
+      if (state.tickets[String(item.number)]) continue;
+      if (pendingTickets(state).length >= settings.router.maxConcurrent) break;
+      const ticket = createTicket(item, settings, now);
+      state.tickets[String(ticket.number)] = ticket;
+      saveTicket(settings, ticket);
+      created.push(ticket);
+      remember(ticket);
+    }
+
+    const dispatch = [];
+    const attempted = new Set([
+      ...verification.map((item) => item.number),
+      ...finishedThisTick,
+    ]);
+    while (runningTickets(state).length < settings.router.maxConcurrent) {
+      const next = pendingTickets(state).find(
+        (ticket) => ['queued', 'claimed'].includes(ticket.state) && !attempted.has(ticket.number),
+      );
+      if (!next) break;
+      attempted.add(next.number);
+      const prepared = prepareDispatch({ repoRoot, settings, state, ticket: next, now });
+      const result = await executeDispatch({
+        repoRoot,
+        settings,
+        state,
+        ticket: next,
+        prepared,
+        dryRun: false,
+      });
+      dispatch.push({ number: next.number, ...result });
+      remember(next);
+    }
+
+    // In wait mode a Worker may return `ready` during this tick. Verify it now
+    // instead of making a person wait for the next scheduled tick.
+    for (const ticket of Object.values(state.tickets)) {
+      if (ticket.state !== 'verifying' || verified.has(ticket.number)) continue;
+      const result = verifyTicket({ repoRoot, settings, state, ticket });
+      verification.push({ number: ticket.number, status: result.status });
+      verified.add(ticket.number);
+      remember(ticket);
+    }
+
+    syncActiveTicket(state);
+    saveState(settings, state);
+
+    const status = dispatch.find((item) => item.status === 'executor-not-configured')?.status
+      || verification.at(-1)?.status
+      || dispatch.at(-1)?.status
+      || (created.length ? 'queued' : null)
+      || (changed.size ? [...changed.values()].at(-1).state : null)
+      || (activeTickets(state)[0]?.state ?? 'idle');
+
+    return {
+      status,
+      ticket: changed.values().next().value || null,
+      tickets: [...changed.values()],
+      created: created.map((ticket) => ticket.number),
+      dispatch,
+      verification,
+      completed,
+      expired,
+      inbox: inboxSummary(loadInbox(settings)),
+      state,
+    };
   });
 }
 
@@ -795,16 +1208,24 @@ function summary(state) {
     attempts: ticket.attempts,
     maxAttempts: ticket.maxAttempts,
     lease: ticket.lease?.expiresAt || null,
+    workerPid: ticket.worker?.pid || null,
     pr: ticket.pr,
     question: ticket.humanQuestion,
   }));
 }
 
-async function selectCandidateForTick({ repoRoot, settings, noClaim = false }) {
+async function selectCandidatesForTick({
+  repoRoot,
+  settings,
+  noClaim = false,
+  limit = 1,
+  exclude = new Set(),
+  prefer = [],
+}) {
   const token = resolveToken();
   const policy = parsePolicy(settings.policy);
   const selfLogin = await resolveSelfLogin(settings.githubRepo, token);
-  const { state, candidate } = await selectOne({
+  const { state, candidates } = await selectCandidates({
     policy,
     repoRoot,
     githubRepo: settings.githubRepo,
@@ -813,26 +1234,49 @@ async function selectCandidateForTick({ repoRoot, settings, noClaim = false }) {
     ttlMinutes: settings.claimTtlMinutes,
     outDir: settings.outDir,
     refresh: true,
+    limit,
+    exclude,
+    prefer,
   });
-  if (!candidate) return null;
+  if (candidates.length === 0) return [];
   mkdirSync(settings.outDir, { recursive: true });
   writeJsonAtomic(join(settings.outDir, 'triage.json'), state);
-  writeJsonAtomic(join(settings.outDir, 'work.json'), {
-    ...candidate,
-    claimedBy: noClaim ? '(dry-run)' : selfLogin,
-    claimedAt: nowIso(),
-  });
-  if (!noClaim && selfLogin) {
-    await ghJson(settings.githubRepo, `/issues/${candidate.number}/assignees`, token, {
-      method: 'POST',
-      body: { assignees: [selfLogin] },
+
+  const claimed = [];
+  for (const candidate of candidates) {
+    if (noClaim || !selfLogin) {
+      claimed.push({
+        ...candidate,
+        claimedBy: noClaim ? '(dry-run)' : selfLogin,
+        claimedAt: nowIso(),
+      });
+      continue;
+    }
+    try {
+      await ghJson(settings.githubRepo, `/issues/${candidate.number}/assignees`, token, {
+        method: 'POST',
+        body: { assignees: [selfLogin] },
+      });
+    } catch (error) {
+      console.error(`[router] claim failed for #${candidate.number}: ${error.message}`);
+      continue;
+    }
+    claimed.push({
+      ...candidate,
+      claimedBy: selfLogin,
+      claimedAt: nowIso(),
     });
   }
-  return {
-    ...candidate,
-    claimedBy: noClaim ? '(dry-run)' : selfLogin,
-    claimedAt: nowIso(),
-  };
+  if (!noClaim && selfLogin && claimed.length === 0) {
+    throw new Error('all candidate claims failed');
+  }
+  if (claimed[0]) {
+    writeJsonAtomic(join(settings.outDir, 'work.json'), {
+      ...claimed[0],
+      language: settings.language,
+    });
+  }
+  return claimed;
 }
 
 async function main() {
@@ -846,10 +1290,10 @@ async function main() {
     maxAttempts: values['max-attempts'],
     leaseMinutes: values['lease-minutes'],
     maxConcurrent: values.concurrent,
+    dispatchMode: values['dispatch-mode'],
+    inboxLimit: values['inbox-limit'],
+    language: values.language,
   });
-  if (!settings.githubRepo) {
-    throw new Error('cannot resolve GitHub repo: set githubRepo in .self-loop.json or GITHUB_REPOSITORY');
-  }
   const ticketNumber = values.ticket ? Number(values.ticket) : null;
   const notify = async (ticket) => {
     if (flags['no-notify'] || !ticket) return;
@@ -865,33 +1309,99 @@ async function main() {
 
   if (sub === 'status') {
     const state = loadState(settings);
-    if (flags.json) return console.log(JSON.stringify(state, null, 2));
-    console.log(JSON.stringify({ repo: state.repo, activeTicket: state.activeTicket, tickets: summary(state) }, null, 2));
+    const inbox = loadInbox(settings);
+    if (flags.json) return console.log(JSON.stringify({ ...state, inbox: inboxSummary(inbox) }, null, 2));
+    console.log(JSON.stringify({
+      repo: state.repo,
+      activeTicket: state.activeTicket,
+      activeTickets: activeTickets(state).map((ticket) => ticket.number),
+      inbox: inboxSummary(inbox),
+      tickets: summary(state),
+    }, null, 2));
+    return 0;
+  }
+
+  if (sub === 'post') {
+    if (!values.type) {
+      throw new Error('router post requires --type <issue|pull_request|result|worker|verify|recover|clean|schedule|control>');
+    }
+    let payload = {};
+    if (values.file) payload = readJson(resolve(repoRoot, values.file), {});
+    else if (values.data) payload = JSON.parse(values.data);
+    const ticket = values.ticket
+      ? Number(values.ticket)
+      : payload.issue?.number || payload.pull_request?.number || payload.number || payload.ticket || null;
+    return withStateLock(settings, async () => {
+      const result = appendEvent(settings, {
+        type: values.type,
+        action: values.action || '',
+        ticket,
+        payload,
+        id: values.id,
+      });
+      console.log(JSON.stringify({
+        id: result.event.id,
+        duplicate: result.duplicate,
+        type: result.event.type,
+        ticket: result.event.ticket,
+        pending: inboxSummary(loadInbox(settings)).pending,
+      }, null, 2));
+      return 0;
+    });
+  }
+
+  if (sub === 'inbox') {
+    const inbox = loadInbox(settings);
+    const events = flags.pending ? pendingEvents(inbox) : inbox.events;
+    const requested = values.limit === undefined ? events.length : Number(values.limit);
+    const limit = Number.isInteger(requested) && requested >= 0 ? requested : events.length;
+    const selected = limit === 0 ? [] : events.slice(-limit);
+    console.log(JSON.stringify({
+      summary: inboxSummary(inbox),
+      events: selected,
+    }, null, 2));
     return 0;
   }
 
   if (sub === 'tick') {
     const state = loadState(settings);
-    let candidate = null;
-    if (!activeTicket(state)) {
-      candidate = await selectCandidateForTick({
+    const capacity = Math.max(0, settings.router.maxConcurrent - pendingTickets(state).length);
+    let candidates = [];
+    if (capacity > 0) {
+      if (!settings.githubRepo) {
+        throw new Error('cannot resolve GitHub repo: set githubRepo in .self-loop.json or GITHUB_REPOSITORY');
+      }
+      const exclude = new Set(
+        Object.values(state.tickets)
+          .filter((ticket) => !TERMINAL_STATES.has(ticket.state))
+          .map((ticket) => ticket.number),
+      );
+      candidates = await selectCandidatesForTick({
         repoRoot,
         settings,
         noClaim: Boolean(flags['no-claim']) || Boolean(flags['dry-run']),
+        limit: capacity,
+        exclude,
+        prefer: pendingEventTickets(settings),
       });
-      if (!candidate) {
-        console.log('[router] no eligible issue');
-        return 3;
-      }
+    }
+    if (candidates.length === 0 && activeTickets(state).length === 0) {
+      console.log('[router] no eligible issue');
+      return 3;
     }
     const result = await tickRouter({
       repoRoot,
       settings,
-      candidate,
+      candidates,
       dryRun: Boolean(flags['dry-run']),
     });
-    console.log(JSON.stringify(flags.json ? result : { status: result.status, ticket: result.ticket?.number || null }, null, 2));
-    if (!flags['dry-run']) await notify(result.ticket);
+    console.log(JSON.stringify(flags.json ? result : {
+      status: result.status,
+      tickets: (result.tickets || []).map((ticket) => ticket.number),
+    }, null, 2));
+    if (!flags['dry-run']) {
+      for (const ticket of result.tickets || []) await notify(ticket);
+    }
     return 0;
   }
 
@@ -903,7 +1413,7 @@ async function main() {
       const ticket = state.tickets[String(envelope.ticket)]
         || (ticketNumber ? state.tickets[String(ticketNumber)] : null);
       if (!ticket) throw new Error(`unknown Ticket #${envelope.ticket}`);
-      applyResultToTicket(ticket, envelope);
+      applyResultToTicket(ticket, envelope, settings.language);
       saveTicket(settings, ticket);
       saveState(settings, state);
       console.log(`[router] #${ticket.number} ${ticket.state}`);
@@ -967,7 +1477,7 @@ async function main() {
     });
   }
 
-  console.error(`[router] unknown command: ${sub} (tick|status|report|verify|recover|clean|watchdog)`);
+  console.error(`[router] unknown command: ${sub} (tick|status|post|inbox|report|verify|recover|clean|watchdog)`);
   return 2;
 }
 

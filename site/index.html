@@ -371,7 +371,12 @@
           <div class="run-row">
             <span class="run-label">terminal</span>
             <code>node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET"</code>
-            <span class="run-note">手动、一次一个</span>
+            <span class="run-note">手动或事件唤醒；默认 1 条</span>
+          </div>
+          <div class="run-row">
+            <span class="run-label">inbox</span>
+            <code>router post --type issue --ticket 42 && router tick</code>
+            <span class="run-note">事件驱动，可配并发</span>
           </div>
           <div class="run-row">
             <span class="run-label">cron</span>

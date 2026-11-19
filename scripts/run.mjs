@@ -79,7 +79,11 @@ async function main() {
       cwd: repoRoot,
       stdio: 'inherit',
       shell: true,
-      env: { ...process.env, ISSUE_NUMBER: String(issueNumber) },
+      env: {
+        ...process.env,
+        ISSUE_NUMBER: String(issueNumber),
+        SELF_LOOP_LANGUAGE: settings.language,
+      },
     });
     return agent.status ?? 2;
   }

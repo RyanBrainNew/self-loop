@@ -5,11 +5,13 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { normalizeLanguage } from './copy.mjs';
 
 export const CONFIG_FILE = '.self-loop.json';
 
 export const DEFAULTS = Object.freeze({
   policy: 'ready-for-agent',
+  language: 'zh-CN',
   claimTtlMinutes: 180,
   retroDays: 2,
   outDir: '.loop',
@@ -22,6 +24,8 @@ export const ROUTER_DEFAULTS = Object.freeze({
   maxAttempts: 2,
   leaseMinutes: 45,
   maxConcurrent: 1,
+  dispatchMode: 'wait',
+  inboxLimit: 200,
   lockMinutes: 30,
   llmAdvisory: false,
   comments: true,
@@ -165,6 +169,14 @@ function booleanValue(value, label) {
   throw new Error(`${label} must be true or false`);
 }
 
+function enumValue(value, allowed, label) {
+  const selected = String(value ?? '').trim();
+  if (!allowed.includes(selected)) {
+    throw new Error(`${label} must be one of ${allowed.join(', ')}: ${selected}`);
+  }
+  return selected;
+}
+
 function stringArray(value) {
   if (Array.isArray(value)) return value.map(String).filter(Boolean);
   if (typeof value === 'string' && value.trim()) return [value.trim()];
@@ -206,6 +218,14 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
 
   return {
     repoRoot,
+    language: normalizeLanguage(
+      choose(
+        overrides.language,
+        firstEnv(env, ['SELF_LOOP_LANGUAGE', 'LOOP_LANGUAGE']),
+        config.language,
+        DEFAULTS.language,
+      ),
+    ),
     policy: String(
       choose(
         overrides.policy,
@@ -299,6 +319,25 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
           ROUTER_DEFAULTS.maxConcurrent,
         ),
         'maxConcurrent',
+      ),
+      dispatchMode: enumValue(
+        choose(
+          overrides.dispatchMode,
+          firstEnv(env, ['SELF_LOOP_DISPATCH_MODE', 'LOOP_DISPATCH_MODE']),
+          routerConfig.dispatchMode,
+          ROUTER_DEFAULTS.dispatchMode,
+        ),
+        ['wait', 'background'],
+        'dispatchMode',
+      ),
+      inboxLimit: positiveInteger(
+        choose(
+          overrides.inboxLimit,
+          firstEnv(env, ['SELF_LOOP_INBOX_LIMIT', 'LOOP_INBOX_LIMIT']),
+          routerConfig.inboxLimit,
+          ROUTER_DEFAULTS.inboxLimit,
+        ),
+        'inboxLimit',
       ),
       lockMinutes: positiveInteger(
         choose(
@@ -538,8 +577,35 @@ export function ineligibleReason(issue, options = {}) {
 
 /** Oldest first, deterministic across runs. */
 export function selectCandidate(issues = [], options = {}) {
-  const ordered = [...issues].sort((a, b) => normalizeTimestamp(a.createdAt) - normalizeTimestamp(b.createdAt));
-  return ordered.find((issue) => ineligibleReason(issue, options) === '') || null;
+  return pickCandidates(issues, options, { limit: 1 })[0] || null;
+}
+
+/**
+ * Pick up to `limit` eligible Issues. `prefer` moves event-mentioned Issues to
+ * the front without making them eligible; `exclude` skips known Tickets.
+ */
+export function pickCandidates(issues = [], options = {}, {
+  limit = 1,
+  exclude = new Set(),
+  prefer = [],
+} = {}) {
+  const skipped = exclude instanceof Set ? exclude : new Set(exclude);
+  const priority = new Map(
+    (prefer || [])
+      .map(Number)
+      .filter((number) => Number.isInteger(number) && number > 0)
+      .map((number, index) => [number, index]),
+  );
+  return [...issues]
+    .filter((issue) => !skipped.has(Number(issue.number)))
+    .filter((issue) => ineligibleReason(issue, options) === '')
+    .sort((a, b) => {
+      const left = priority.get(Number(a.number)) ?? Number.MAX_SAFE_INTEGER;
+      const right = priority.get(Number(b.number)) ?? Number.MAX_SAFE_INTEGER;
+      if (left !== right) return left - right;
+      return normalizeTimestamp(a.createdAt) - normalizeTimestamp(b.createdAt);
+    })
+    .slice(0, Math.max(0, Number(limit) || 0));
 }
 
 export function isMain(metaUrl = import.meta.url, argv1 = process.argv[1]) {

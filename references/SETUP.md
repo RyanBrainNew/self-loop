@@ -40,6 +40,8 @@ Inspect the target repository. Do not assume defaults without checking.
   scheduler already present?
 - Local agent commands: is `codex` or `claude` available? Is
   `SELF_LOOP_AGENT` already set?
+- Project language: are `README.md`, `AGENTS.md`, or design docs predominantly
+  Chinese or English? Is `language` already set in `.self-loop.json`?
 - `gh auth status` and `gh label list`: can labels be created? Do any of the
   five roles already exist?
 
@@ -55,6 +57,7 @@ Repository: owner/name
 Existing config: none | path and preserved choices
 Executor: detected command | not detected
 Verifier: detected commands | not detected
+Language: zh-CN | en | detected from project docs
 Memory: existing files | will create defaults
 Labels: already present | can create | gh unavailable
 Old loop/scheduler: none | found at ...
@@ -90,6 +93,7 @@ I will configure:
 - GitHub: owner/name
 - Executor: codex exec --full-auto
 - Independent checks: npm test, npm run lint
+- Language: zh-CN (PR title/body and person-facing Router text)
 - Memory: memory/LESSONS.md, memory/code-standards.md, memory/DECISIONS.md
 - Labels: create only the five self-loop roles if missing
 - Ignore: .loop/
@@ -111,6 +115,7 @@ node "$SKILL_DIR/scripts/setup-project.mjs" \
   [--github owner/name] \
   [--executor "<command>"] \
   [--verify "<command>"] \
+  [--language zh-CN|en] \
   [--memory-dir <path>] \
   [--no-labels] \
   [--dry-run] \
@@ -123,6 +128,8 @@ changes with the confirmed proposal. Then run without `--dry-run`.
 The helper:
 
 - merges `.self-loop.json` without removing unknown fields;
+- fills `language` from an explicit flag, existing config, or project docs, and
+  defaults to `zh-CN`;
 - creates only missing memory files;
 - adds `.loop/` or the configured output directory to `.gitignore`;
 - tries to create the five role labels with `gh`;

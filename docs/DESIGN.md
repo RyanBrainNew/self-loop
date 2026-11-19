@@ -227,7 +227,7 @@ If any check fails, the Ticket becomes `blocked` and waits for
 | Task Card | Scope, acceptance, required checks, out-of-scope paths |
 | Work | Branch, worktree, allowed diff, no default-branch push |
 | Verification | Clean worktree, project gates, evidence, no Worker self-certification |
-| Delivery | `Closes #N`, PR body has validation and Not run, no merge |
+| Delivery | `Closes #N`, PR body in the configured `language`, validation and Not run, no merge |
 | Human review | A person decides; Router records the outcome |
 | Retro | Every lesson has commit/issue/PR evidence |
 
@@ -338,6 +338,8 @@ New commands:
 ```bash
 node scripts/run.mjs router tick   --repo <target>
 node scripts/run.mjs router status --repo <target>
+node scripts/run.mjs router post   --repo <target> --type issue --ticket 42
+node scripts/run.mjs router inbox  --repo <target> --pending
 node scripts/run.mjs router watchdog --repo <target>
 node scripts/run.mjs router recover --repo <target> --ticket 42
 node scripts/run.mjs router verify  --repo <target> --ticket 42
@@ -354,6 +356,7 @@ Proposed configuration:
 ```json
 {
   "policy": "ready-for-agent",
+  "language": "zh-CN",
   "claimTtlMinutes": 180,
   "retroDays": 2,
   "outDir": ".loop",
@@ -365,7 +368,9 @@ Proposed configuration:
   "router": {
     "maxAttempts": 2,
     "leaseMinutes": 45,
-    "maxConcurrent": 1,
+    "maxConcurrent": 3,
+    "dispatchMode": "background",
+    "inboxLimit": 200,
     "lockMinutes": 30,
     "llmAdvisory": false,
     "comments": true,
@@ -454,6 +459,10 @@ Implemented in the first version:
 - independent Verifier with `pass | fail | human_review`, clean detached
   worktree, and JSONL evidence;
 - idempotent Router-owned Issue status comments;
+- durable inbox events, event-triggered `tick`, and `post` / `inbox`;
+- configurable `language` for PR titles/bodies and person-facing Router text;
+- `maxConcurrent`, `wait` / `background` dispatch, and independent verification
+  of each Ticket;
 - `tick`, `status`, `verify`, `report`, `recover`, `clean`, and `watchdog`.
 
 Deliberately deferred:
@@ -461,7 +470,7 @@ Deliberately deferred:
 - PR follow-up, review-comment handling, and merge automation (merge is never
   automatic);
 - optional semantic Reviewer and LLM-drafted Task Cards;
-- multiple concurrent Workers;
+- large-scale queueing, fair scheduling, and cross-repository inboxes;
 - container or sandbox isolation;
 - live GitHub integration tests for comments and claims; unit and CLI tests use
   local fixtures and fake repositories.

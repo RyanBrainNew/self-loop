@@ -5,9 +5,14 @@ description: Configure through an agent conversation when a project wants the lo
 
 # self-loop
 
-Use this skill to triage open issues, select one eligible issue, implement it on
-a branch, open a PR, verify it independently, and run evidence-based
-retrospectives. The loop never merges PRs and never pushes the default branch.
+Use this skill to triage open issues, select eligible issues (one per Worker),
+implement each on a branch, open a PR, verify it independently, and run
+evidence-based retrospectives. The loop never merges PRs and never pushes the
+default branch.
+
+Each Worker implements exactly one Issue. The Router may keep several Tickets in
+flight when `router.maxConcurrent` is greater than `1`, and it can be woken by
+durable inbox events instead of waiting for the next cron slot.
 
 The Router is a deterministic control plane. An LLM may advise on triage, a Task
 Card draft, or semantic review, but it cannot grant authority or override a
@@ -26,6 +31,7 @@ root explicitly:
 node "$SKILL_DIR/scripts/run.mjs" triage --repo /path/to/project
 node "$SKILL_DIR/scripts/run.mjs" select --repo /path/to/project
 node "$SKILL_DIR/scripts/run.mjs" router tick --repo /path/to/project
+node "$SKILL_DIR/scripts/run.mjs" router post --repo /path/to/project --type issue --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" retro --repo /path/to/project
 ```
 
@@ -59,6 +65,10 @@ memory or explicit choices.
 Default memory paths are `memory/LESSONS.md`, `memory/code-standards.md`, and
 `memory/DECISIONS.md`, all relative to the target repo.
 
+The default `language` is `zh-CN`: PR titles and bodies, plus person-facing
+Router text, are Simplified Chinese while code, commands, paths, identifiers,
+and verbatim logs stay unchanged. Set `"language": "en"` for English.
+
 Install this repository as a skill (a skill library, a collection repository's
 `skills/self-loop` path, or a manual clone). Keep `SKILL.md`, `scripts/`,
 `references/`, `templates/`, and optionally `adapters/` together. Locate scripts
@@ -72,7 +82,8 @@ companion skill from `setup-self-loop/` and invoke `setup-self-loop` directly.
 - `references/LOOP.md` - issue-loop workflow and delivery rules.
 - `references/SETUP.md` - one-time project onboarding and automatic detection.
 - `references/ROUTER.md` - deterministic Router, Ticket state, Task Card,
-  Context Packet, Result Envelope, leases, worktrees, and verification.
+  Context Packet, Result Envelope, leases, worktrees, inbox events, concurrency,
+  and verification.
 - `references/WORK.md` - implement exactly one selected issue.
 - `references/RETRO.md` - turn evidence into durable lessons.
 - `references/MEMORY.md` - memory protocol and write permissions.

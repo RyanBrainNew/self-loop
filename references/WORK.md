@@ -1,7 +1,21 @@
 # Work Reference: One Selected Issue
 
 > The issue number comes from `work.json` in the configured output directory or
-> from `ISSUE_NUMBER`. Do only one issue per run.
+> from `ISSUE_NUMBER`. A Worker does one issue per dispatch even when the Router
+> runs several Tickets concurrently.
+
+## Output language
+
+The language comes from the Context Packet (`language`), the Task Card
+(`language`), and `SELF_LOOP_LANGUAGE`. The default is `zh-CN`.
+
+- `zh-CN`: write the PR title and body in Simplified Chinese. Keep code,
+  commands, paths, identifiers, and verbatim log lines unchanged. Keep the
+  closing reference `Closes #N` literal so GitHub can link it.
+- `en`: write the PR title and body in English, with the same exclusions.
+
+Do not translate a command or an error message that was copied from a real run;
+put the Chinese explanation around it.
 
 ## 1. Confirm the target
 
@@ -35,10 +49,12 @@ environment rather than assuming the defaults.
 ## 4. Deliver
 
 1. Push the branch and open a PR. Start the body with `Closes #N`.
-2. List each acceptance check with command, directory, and result.
-3. Mark everything else **Not run**.
-4. Link the PR back to the issue.
-5. Do not merge and do not push the default branch.
+2. Write the title and body in the configured language; do not leave English
+   prose when `language` is `zh-CN`.
+3. List each acceptance check with command, directory, and result.
+4. Mark everything else **Not run**.
+5. Link the PR back to the issue.
+6. Do not merge and do not push the default branch.
 
 When dispatched by the Router, also write the Result Envelope named by
 `SELF_LOOP_RESULT`. Use the schema in `ROUTER.md`; do not edit `.loop/state.json`

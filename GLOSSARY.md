@@ -7,8 +7,9 @@ retrospective findings into durable project memory.
 ## Language
 
 **Self-loop**:
-A repository-scoped system that selects one eligible issue, coordinates one
-implementation attempt, verifies the result, and records lessons.
+A repository-scoped system that selects eligible issues, coordinates one or
+more implementation attempts within a concurrency limit, verifies each result,
+and records lessons.
 _Avoid_: loop, automation, bot
 
 **Target repository**:
@@ -47,6 +48,11 @@ _Avoid_: claim, lock
 The caller-supplied rule that decides which Issues are eligible for work.
 _Avoid_: mode, strategy
 
+**Language**:
+The project setting that controls the language of PR titles/bodies and
+person-facing Router text. Machine values and verbatim logs stay unchanged.
+_Avoid_: locale, translation mode
+
 **Role label**:
 One of the five GitHub labels that describes an Issue's human triage state.
 _Avoid_: status label, queue label
@@ -56,6 +62,26 @@ The control plane that evaluates eligibility, claims work, assembles context,
 dispatches Attempts, runs gates, and advances Ticket state. It does not write
 business code.
 _Avoid_: orchestrator, manager, chief agent
+
+**Inbox**:
+A durable, append-only event log that wakes the Router and hints at which Issue
+to consider next. It never grants authority or bypasses a gate.
+_Avoid_: queue, message bus, task tray
+
+**Event**:
+One typed inbox record, such as an Issue label change, a PR close, a completed
+Result Envelope, or a manual recovery request.
+_Avoid_: notification, webhook payload
+
+**Dispatch mode**:
+Whether the Router waits for an executor inline (`wait`) or detaches it and
+collects the Result Envelope on a later tick (`background`).
+_Avoid_: sync mode, async mode
+
+**Concurrency**:
+The number of Tickets the Router may keep in `queued`, `claimed`, `working`, or
+`verifying` at once, set by `router.maxConcurrent`.
+_Avoid_: parallelism, worker count
 
 **Worker**:
 The executor that implements exactly one atomic Task Card in an isolated

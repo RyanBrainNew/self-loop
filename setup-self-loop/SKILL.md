@@ -48,6 +48,9 @@ Only two failures justify one short question:
 
 Then rerun with `--github owner/name` or `--executor "<command>"`.
 
+Language is detected from the project's docs and defaults to `zh-CN`. Pass
+`--language en` only when the user explicitly asks for English PRs.
+
 Do not block on missing verifier commands. The independent Verifier will return
 `human_review` instead of a false pass.
 
@@ -58,6 +61,7 @@ After success, print at most:
 ```text
 self-loop configured: owner/repo
 config: <path>
+language: zh-CN | en
 memory: created N, preserved N
 labels: <status>
 next: <the dry-run command returned by setup>

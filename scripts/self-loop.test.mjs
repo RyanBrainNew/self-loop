@@ -23,6 +23,7 @@ import {
   parseArgs,
   parsePolicy,
   pathInRepo,
+  pickCandidates,
   resolveRepo,
   resolveSettings,
   roleOf,
@@ -35,6 +36,7 @@ import { automationNamesForRepo, buildIssuePrompt } from '../adapters/orca/setup
 import {
   detectExecutor,
   detectGithubRepo,
+  detectLanguage,
   ensureGitignore,
   ensureLabels,
   mergeProjectConfig,
@@ -42,24 +44,30 @@ import {
 } from './setup-project.mjs';
 import {
   applyResultToTicket,
+  activeTickets,
   buildContextPacket,
   buildIssueStatusComment,
   buildTaskCard,
   cleanTicketWorktree,
+  collectCompletedResults,
   createTicket,
+  drainInbox,
   emptyState,
   executeDispatch,
   expireTicketIfNeeded,
   extractAcceptance,
   loadState,
+  pendingTickets,
   prepareDispatch,
   recoverTicket,
+  saveState,
   tickRouter,
   validateResultEnvelope,
   verifyTicket,
   withStateLock,
   STATUS_MARKER,
 } from './router.mjs';
+import { appendEvent, loadInbox } from './inbox.mjs';
 import { discoverVerifierCommands, runVerifier } from './verifier.mjs';
 
 const now = Date.parse('2026-11-13T08:00:00Z');
@@ -626,6 +634,14 @@ test('Orca adapter prompts call the installed skill scripts, not loop/run.mjs', 
   assert.match(prompt, /--repo \./);
   assert.doesNotMatch(prompt, /--repo "\/work\/project"/);
   assert.doesNotMatch(prompt, /node loop\/run\.mjs/);
+  assert.match(prompt, /简体中文/);
+  assert.match(buildIssuePrompt({
+    name: 'fixture',
+    policy: 'ready-for-agent',
+    repoPath: '/work/project',
+    outDir: '/work/project/.loop',
+    language: 'en',
+  }), /Write the PR title and body in English/);
 });
 
 test('Orca automation names are sanitized and repository-specific', () => {
@@ -655,7 +671,7 @@ test('GitHub precheck treats auth and rate-limit responses as reachable', () => 
 
 test('Task Card parses explicit acceptance and blocks on ambiguity', () => {
   const repo = tempRepo();
-  const settings = resolveSettings(repo, {}, {});
+  const settings = resolveSettings(repo, { language: 'en' }, {});
   assert.deepEqual(
     extractAcceptance('## Acceptance criteria\n- [ ] redirect works\n- [x] regression test\n## Notes\n- not acceptance'),
     ['redirect works', 'regression test'],
@@ -705,7 +721,7 @@ test('Router settings resolve CLI, environment, config, and defaults in order', 
   assert.equal(fromCli.router.maxAttempts, 5);
 });
 
-test('configured executors receive the installed WORK.md reference', () => {
+test('configured executors receive the installed WORK.md reference', async () => {
   const repo = tempRepo();
   const prepared = {
     blocked: false,
@@ -717,7 +733,7 @@ test('configured executors receive the installed WORK.md reference', () => {
     worktreeMode: 'external',
     executorCommand: ['codex', 'exec', '--full-auto'],
   }, {});
-  const fromArray = executeDispatch({
+  const fromArray = await executeDispatch({
     repoRoot: repo,
     settings: arraySettings,
     state: {},
@@ -736,7 +752,7 @@ test('configured executors receive the installed WORK.md reference', () => {
     worktreeMode: 'external',
     executorCommand: 'codex exec --full-auto',
   }, {});
-  const fromString = executeDispatch({
+  const fromString = await executeDispatch({
     repoRoot: repo,
     settings: stringSettings,
     state: {},
@@ -808,7 +824,7 @@ test('Router status comments are stable, idempotent, and human-readable', () => 
     branch: 'loop/42-fix-redirect',
     pr: 123,
     humanQuestion: 'Which redirect should expired sessions use?',
-  });
+  }, 'en');
   assert.match(body, new RegExp(STATUS_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(body, /status: `blocked`/);
   assert.match(body, /Attempt: 2\/2/);
@@ -890,7 +906,7 @@ test('Verifier runs in a clean worktree and returns objective evidence', () => {
 
 test('Task Card without concrete acceptance blocks before dispatch', async () => {
   const repo = tempRepo();
-  const settings = resolveSettings(repo, { worktreeMode: 'external' }, {});
+  const settings = resolveSettings(repo, { worktreeMode: 'external', language: 'en' }, {});
   const result = await tickRouter({
     repoRoot: repo,
     settings,
@@ -968,6 +984,7 @@ test('verifyTicket promotes a pass and retries or blocks a failure', () => {
 
   const passing = resolveSettings(repo, {
     verifierCommands: ['node -e "process.exit(0)"'],
+    language: 'en',
   }, {});
   const passState = emptyState(passing);
   const passTicket = createTicket({ number: 14, title: 'pass' }, passing);
@@ -981,6 +998,7 @@ test('verifyTicket promotes a pass and retries or blocks a failure', () => {
 
   const failing = resolveSettings(repo, {
     verifierCommands: ['node -e "process.exit(3)"'],
+    language: 'en',
   }, {});
   const failState = emptyState(failing);
   const retryTicket = createTicket({ number: 15, title: 'retry' }, failing);
@@ -1065,6 +1083,357 @@ test('router status runs through run.mjs with --repo from outside the target', (
   assert.equal(state.repo, 'acme/project');
   assert.equal(state.activeTicket, null);
   assert.deepEqual(state.tickets, {});
+});
+
+test('language defaults to Chinese and reaches Task Cards and Context Packets', () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, {}, {});
+  assert.equal(settings.language, 'zh-CN');
+  assert.equal(resolveSettings(repo, { language: 'en' }, {}).language, 'en');
+  assert.throws(() => resolveSettings(repo, { language: 'fr' }, {}), /language must be one of/);
+
+  const ticket = createTicket({
+    number: 80,
+    title: '语言',
+    body: '## 验收\n- [ ] 可以运行',
+  }, settings);
+  const card = buildTaskCard({ ticket, settings });
+  assert.equal(card.language, 'zh-CN');
+  assert.equal(card.blockedReason, null);
+  const packet = buildContextPacket({
+    repoRoot: repo,
+    settings,
+    ticket,
+    taskCard: card,
+    role: 'worker',
+  });
+  assert.equal(packet.language, 'zh-CN');
+  assert.equal(packet.constraints.language, 'zh-CN');
+
+  const zh = buildIssueStatusComment({
+    number: 80,
+    title: '语言',
+    state: 'blocked',
+    attempts: 1,
+    maxAttempts: 2,
+    humanQuestion: '需要确认吗？',
+  }, 'zh-CN');
+  assert.match(zh, /状态/);
+  assert.match(zh, /由人决定/);
+  const en = buildIssueStatusComment({
+    number: 80,
+    title: 'language',
+    state: 'blocked',
+    attempts: 1,
+    maxAttempts: 2,
+  }, 'en');
+  assert.match(en, /a person still decides whether to merge/);
+});
+
+test('router dispatch mode is explicit and validated', () => {
+  const repo = tempRepo();
+  assert.equal(resolveSettings(repo, {}, {}).router.dispatchMode, 'wait');
+  assert.equal(resolveSettings(repo, { dispatchMode: 'background' }, {}).router.dispatchMode, 'background');
+  assert.throws(
+    () => resolveSettings(repo, { dispatchMode: 'parallel' }, {}),
+    /dispatchMode must be one of wait, background/,
+  );
+});
+
+test('candidate picking honours events and excludes known Tickets', () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, {}, {});
+  writeFileSync(join(repo, '.self-loop.json'), JSON.stringify({ language: 'zh-CN' }));
+  const policy = parsePolicy('ready-for-agent');
+  const issues = [
+    issue({ number: 1, labels: ['ready-for-agent'], createdAt: '2026-01-01T00:00:00Z' }),
+    issue({ number: 2, labels: ['ready-for-agent'], createdAt: '2026-01-02T00:00:00Z' }),
+    issue({ number: 3, labels: ['ready-for-agent'], createdAt: '2026-01-03T00:00:00Z' }),
+  ];
+  assert.deepEqual(
+    pickCandidates(issues, { policy, now }, { limit: 2, prefer: [3] }).map((item) => item.number),
+    [3, 1],
+  );
+  assert.deepEqual(
+    pickCandidates(issues, { policy, now }, { limit: 2, exclude: new Set([1]) }).map((item) => item.number),
+    [2, 3],
+  );
+  assert.equal(settings.language, 'zh-CN');
+});
+
+test('inbox events are idempotent and a result event advances the Ticket', async () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, { worktreeMode: 'external' }, {});
+  await withStateLock(settings, async () => {
+    const first = appendEvent(settings, { type: 'issue', ticket: 31, id: 'evt-same' });
+    const second = appendEvent(settings, { type: 'issue', ticket: 31, id: 'evt-same' });
+    assert.equal(first.duplicate, false);
+    assert.equal(second.duplicate, true);
+  });
+  assert.equal(loadInbox(settings).events.length, 1);
+
+  const state = emptyState(settings);
+  const ticket = createTicket({
+    number: 31,
+    title: 'event',
+    body: '## Acceptance\n- [ ] works',
+  }, settings);
+  state.tickets['31'] = ticket;
+  state.activeTicket = 31;
+  saveState(settings, state);
+
+  const resultDir = join(settings.outDir, 'artifacts', '31');
+  mkdirSync(resultDir, { recursive: true });
+  const resultPath = join(resultDir, 'result.json');
+  writeFileSync(resultPath, JSON.stringify({
+    ticket: 31,
+    attempt: 1,
+    state: 'dropped',
+    humanText: 'done',
+    artifactRefs: [],
+  }));
+  await withStateLock(settings, async () => {
+    appendEvent(settings, {
+      type: 'result',
+      ticket: 31,
+      payload: { resultPath },
+      id: 'evt-result',
+    });
+  });
+
+  const drained = drainInbox({ repoRoot: repo, settings, state: loadState(settings) });
+  assert.equal(drained.pending, 2);
+  const after = loadState(settings);
+  assert.equal(after.tickets['31'].state, 'done');
+  assert.ok(loadInbox(settings).events.every((event) => event.handledAt));
+});
+
+test('completed Result Envelopes are collected without an event', () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, { worktreeMode: 'external' }, {});
+  const state = emptyState(settings);
+  const ticket = createTicket({
+    number: 32,
+    title: 'completed',
+    body: '## Acceptance\n- [ ] works',
+  }, settings);
+  ticket.state = 'working';
+  ticket.attempts = 1;
+  const resultDir = join(settings.outDir, 'artifacts', '32', 'attempt-1');
+  mkdirSync(resultDir, { recursive: true });
+  ticket.resultPath = join(resultDir, 'result.json');
+  writeFileSync(ticket.resultPath, JSON.stringify({
+    ticket: 32,
+    attempt: 1,
+    state: 'ready',
+    humanText: 'ready',
+    artifactRefs: [],
+  }));
+  state.tickets['32'] = ticket;
+  state.activeTicket = 32;
+  saveState(settings, state);
+
+  const applied = collectCompletedResults({ repoRoot: repo, settings, state: loadState(settings) });
+  assert.deepEqual(applied.map((item) => item.status), ['applied']);
+  assert.equal(loadState(settings).tickets['32'].state, 'verifying');
+});
+
+test('maxConcurrent dispatches several Tickets and leaves the rest for the next tick', async () => {
+  const repo = tempRepo();
+  const agent = join(repo, 'agent.mjs');
+  writeFileSync(agent, [
+    "import { writeFileSync } from 'node:fs';",
+    'const ticket = Number(process.env.SELF_LOOP_TICKET);',
+    'writeFileSync(process.env.SELF_LOOP_RESULT, JSON.stringify({',
+    '  ticket,',
+    '  attempt: 1,',
+    "  state: 'progress',",
+    "  humanText: 'working',",
+    '  artifactRefs: [],',
+    '}));',
+  ].join('\n'));
+  const settings = resolveSettings(repo, {
+    worktreeMode: 'external',
+    executorCommand: [process.execPath, agent],
+    maxConcurrent: 2,
+  }, {});
+  const candidates = [41, 42, 43].map((number) => ({
+    number,
+    title: `issue ${number}`,
+    body: '## Acceptance\n- [ ] works',
+    labels: ['ready-for-agent'],
+  }));
+  const first = await tickRouter({ repoRoot: repo, settings, candidates });
+  let state = loadState(settings);
+  assert.deepEqual(Object.keys(state.tickets).sort(), ['41', '42']);
+  assert.equal(state.tickets['41'].state, 'working');
+  assert.equal(state.tickets['42'].state, 'working');
+  assert.equal(first.dispatch.length, 2);
+  assert.equal(activeTickets(state).length, 2);
+  assert.equal(pendingTickets(state).length, 2);
+
+  state.tickets['41'].state = 'done';
+  saveState(settings, state);
+  await tickRouter({ repoRoot: repo, settings, candidates: [candidates[2]] });
+  state = loadState(settings);
+  assert.equal(state.tickets['43'].state, 'working');
+  assert.equal(state.tickets['42'].state, 'working');
+});
+
+test('background dispatch detaches and a later tick collects the result', async () => {
+  const repo = tempRepo();
+  const agent = join(repo, 'background-agent.mjs');
+  writeFileSync(agent, [
+    "import { writeFileSync } from 'node:fs';",
+    'const ticket = Number(process.env.SELF_LOOP_TICKET);',
+    'writeFileSync(process.env.SELF_LOOP_RESULT, JSON.stringify({',
+    '  ticket,',
+    '  attempt: 1,',
+    "  state: 'progress',",
+    "  humanText: 'background working',",
+    '  artifactRefs: [],',
+    '}));',
+  ].join('\n'));
+  const settings = resolveSettings(repo, {
+    worktreeMode: 'external',
+    executorCommand: [process.execPath, agent],
+    dispatchMode: 'background',
+  }, {});
+  const first = await tickRouter({
+    repoRoot: repo,
+    settings,
+    candidate: {
+      number: 50,
+      title: 'background',
+      body: '## Acceptance\n- [ ] works',
+      labels: ['ready-for-agent'],
+    },
+  });
+  assert.equal(first.status, 'working');
+  const dispatched = loadState(settings).tickets['50'];
+  assert.ok(dispatched.worker?.pid);
+  assert.ok(existsSync(join(repo, dispatched.worker.stdout)));
+  assert.ok(existsSync(join(repo, dispatched.worker.stderr)));
+
+  let complete = false;
+  for (let attempt = 0; attempt < 100 && !complete; attempt++) {
+    if (existsSync(dispatched.resultPath)) {
+      try {
+        JSON.parse(readFileSync(dispatched.resultPath, 'utf8'));
+        complete = true;
+        break;
+      } catch {
+        // The child is still writing; wait and retry.
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(complete, true);
+
+  await tickRouter({ repoRoot: repo, settings });
+  assert.equal(loadState(settings).tickets['50'].lastResult?.state, 'progress');
+});
+
+test('wait dispatch verifies a ready result in the same tick', async () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+  const agent = join(repo, 'ready-agent.mjs');
+  writeFileSync(agent, [
+    "import { writeFileSync } from 'node:fs';",
+    'const ticket = Number(process.env.SELF_LOOP_TICKET);',
+    'writeFileSync(process.env.SELF_LOOP_RESULT, JSON.stringify({',
+    '  ticket,',
+    '  attempt: 1,',
+    "  state: 'ready',",
+    "  humanText: 'ready',",
+    '  artifactRefs: [],',
+    '}));',
+  ].join('\n'));
+  const settings = resolveSettings(repo, {
+    worktreeMode: 'external',
+    executorCommand: [process.execPath, agent],
+    verifierCommands: ['node -e "process.exit(0)"'],
+  }, {});
+  const result = await tickRouter({
+    repoRoot: repo,
+    settings,
+    candidate: {
+      number: 60,
+      title: 'ready',
+      body: '## Acceptance\n- [ ] works',
+      labels: ['ready-for-agent'],
+    },
+  });
+  assert.equal(result.status, 'pass');
+  assert.equal(loadState(settings).tickets['60'].state, 'awaiting_review');
+});
+
+test('setup detects project language and preserves an explicit choice', () => {
+  const repo = tempRepo();
+  execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/acme/lang.git']);
+  writeFileSync(join(repo, 'README.md'), `${'这是一个中文项目。\n'.repeat(20)}`);
+  const first = setupProject({
+    repoRoot: repo,
+    executor: 'node',
+    labels: false,
+    env: {},
+  });
+  assert.equal(first.language, 'zh-CN');
+  const configPath = join(repo, '.self-loop.json');
+  assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).language, 'zh-CN');
+
+  writeFileSync(configPath, JSON.stringify({
+    ...JSON.parse(readFileSync(configPath, 'utf8')),
+    language: 'en',
+  }));
+  const second = setupProject({
+    repoRoot: repo,
+    labels: false,
+    env: {},
+  });
+  assert.equal(second.language, 'en');
+  assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).language, 'en');
+  assert.equal(detectLanguage({ repoRoot: repo, config: {}, env: {} }), 'zh-CN');
+});
+
+test('router post and inbox work without GitHub access', () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, '.self-loop.json'), JSON.stringify({ githubRepo: 'acme/project' }));
+  const env = cleanEnv();
+  execFileSync(process.execPath, [
+    join(scriptsDir, 'run.mjs'),
+    'router',
+    'post',
+    '--repo',
+    repo,
+    '--type',
+    'issue',
+    '--ticket',
+    '55',
+    '--id',
+    'evt-cli',
+  ], {
+    cwd: tmpdir(),
+    env,
+    encoding: 'utf8',
+  });
+  const output = execFileSync(process.execPath, [
+    join(scriptsDir, 'run.mjs'),
+    'router',
+    'inbox',
+    '--repo',
+    repo,
+    '--json',
+  ], {
+    cwd: tmpdir(),
+    env,
+    encoding: 'utf8',
+  });
+  const inbox = JSON.parse(output);
+  assert.equal(inbox.summary.pending, 1);
+  assert.equal(inbox.events[0].ticket, 55);
 });
 
 test('a copied skill root runs against a separate target repo', () => {
