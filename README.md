@@ -11,26 +11,29 @@
 - 不绑定项目技术栈，不假设项目里有 `loop/` 目录。
 - Orca 只是 `adapters/orca/` 里的可选适配器。
 
+## 官网
+
+静态官网源码在 `site/`，无构建步骤和外部运行时依赖。推送到 `main` 后，
+`.github/workflows/pages.yml` 会通过 GitHub Pages 发布 `site/`。
+
+首次启用时在仓库 `Settings > Pages` 选择 `GitHub Actions`，部署完成后再把
+仓库 About 的 Website 指向 `https://ryanbrainnew.github.io/self-loop/`。
+
 ## 安装
 
 要求 Node.js 20+、git；访问 GitHub 需要 `GITHUB_TOKEN` / `GH_TOKEN` 或已登录的 `gh`。
 
-### Magpie Library
+### 通过 skill library 安装
 
-本仓库本身就是 skill，`SKILL.md` 在仓库根。Magpie 的实际安装模型（本机 `~/.config/magpie/library.json` 已核对）是：
-
-- 源记录为 `{ kind: "github", repo, path, commit, hash }`；
-- Magpie 只把 `path` 指向目录的**内容**复制到 `~/.config/magpie/library/skills/<name>`，不保留 `.git`；
-- 再把该目录 junction 到各 agent 的 skills 目录（Codex、Claude 等读的是同一份库）；
-- 升级使用 `magpie library skill update [name]`，会按同一个 `{repo, path}` 重新拉取；本地改过的副本默认保留。
-
-因此：
+本仓库本身就是 skill，`SKILL.md` 在仓库根。支持 GitHub 源安装的 skill
+管理器通常按目录内容复制，常见选择是：
 
 - 独立安装本仓库：源填 `RyanBrainNew/self-loop`，路径选**仓库根**（留空或填 `.`）；
 - 如果使用以 `skills/<name>/` 组织的集合仓库，则路径填 `skills/self-loop`；
 - 安装后必须同时保留 `SKILL.md`、`scripts/`、`references/`、`templates/`，不要只复制 `scripts/`。
 
-Magpie 目前没有 `skill add` 命令行；安装入口在 app 的 Library 页面，`library skill` 子命令负责更新、启停和链接方式。
+不同 skill 管理器的安装入口和更新命令不同；升级时按管理器记录的
+`repo + path` 重新拉取即可。手工维护时直接重新 clone 或 `git pull --ff-only`。
 
 ### 显式初始化技能
 
@@ -198,13 +201,8 @@ node "$SKILL_DIR/adapters/orca/setup.mjs" \
 
 ## 升级
 
-Magpie 安装：
-
-```bash
-magpie library skill update self-loop
-```
-
-手动安装：
+通过 skill library 安装时，使用该管理器的 update/install 操作按原来的
+`repo + path` 重新拉取。手动安装时：
 
 ```bash
 git -C "$SKILL_DIR" pull --ff-only
@@ -227,9 +225,8 @@ node "$SKILL_DIR/scripts/setup-project.mjs" --repo "$TARGET_REPO"
 node "$SKILL_DIR/adapters/orca/setup.mjs" --repo "$TARGET_REPO" --replace --disabled
 ```
 
-然后用项目自己的门禁与 `node --test` 验证 skill 或目标项目。
-
-Magpie 的更新会按安装时记录的 GitHub `repo + path` 重新拉取；如果你在本地直接改过 library 副本，默认保留本地改动。需要覆盖时用 `update <name> --replace-edits`。
+然后用项目自己的门禁与 `node --test` 验证 skill 或目标项目。若你直接改过
+manager 的本地副本，优先保留本地改动；需要覆盖时使用管理器提供的强制更新选项。
 
 ## Memory 协议
 
@@ -262,7 +259,7 @@ npm test
 
 CI 在 push 和 PR 上运行 `node --test`。测试覆盖策略/标签/选择、配置与 memory 路径解析、`--repo` 解析、open PR 去重、领取 TTL、retro 显式窗口、一键 setup 的探测/合并/幂等行为，以及 memory 初始化不覆盖。
 
-Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、`router status` 的 `--repo` 冒烟，以及模拟 Magpie 只复制 skill 根目录后的独立运行。
+Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、`router status` 的 `--repo` 冒烟，以及只复制 skill 根目录后的独立运行。
 
 当前测试基线：`48` 个测试全部通过（Node 20+）。
 
