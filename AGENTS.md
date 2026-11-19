@@ -3,7 +3,8 @@
 ## Repository purpose
 
 This repository is the installable `self-loop` skill. `SKILL.md` is the routing
-document; detailed workflows live in `references/`.
+document; detailed workflows live in `references/`. The project is open source
+under Apache-2.0; keep `LICENSE` and the `package.json` license field in sync.
 
 ## Layout
 
