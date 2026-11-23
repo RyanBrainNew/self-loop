@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -34,7 +35,10 @@ function minimalState(now = Date.now()) {
       lastEventAt: null,
       eventCount: 0,
       health: 'test',
-      config: {},
+      config: {
+        repo: 'acme/self-loop',
+        webhookSecret: 'test-secret',
+      },
     },
   ];
   state.workers = [
@@ -79,6 +83,61 @@ function ingest(engine, overrides = {}) {
     labels: ['test'],
     ...overrides,
   });
+}
+
+async function httpFixture(initialState = null) {
+  const context = fixture(initialState);
+  const api = createApi({ store: context.store, engine: context.engine, publicDir, version: 'test' });
+  const server = createServer(api.handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  return {
+    ...context,
+    api,
+    base: `http://127.0.0.1:${port}`,
+    async close() {
+      await new Promise((resolve) => server.close(resolve));
+      context.cleanup();
+    },
+  };
+}
+
+function githubRequest(base, {
+  event = 'issues',
+  delivery = 'delivery-1',
+  payload,
+  secret = 'test-secret',
+  signature,
+} = {}) {
+  const raw = JSON.stringify(payload);
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-GitHub-Event': event,
+    'X-GitHub-Delivery': delivery,
+  };
+  if (signature !== null) {
+    headers['X-Hub-Signature-256'] =
+      signature ?? `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
+  }
+  return fetch(`${base}/hooks/github`, {
+    method: 'POST',
+    headers,
+    body: raw,
+  });
+}
+
+function issuePayload(action = 'opened', number = 42) {
+  return {
+    action,
+    repository: { full_name: 'acme/self-loop' },
+    sender: { login: 'octocat' },
+    issue: {
+      number,
+      title: `Webhook issue #${number}`,
+      body: 'Create a Ticket from a signed GitHub webhook.',
+      labels: [{ name: 'ready-for-agent' }, { name: 'high' }],
+    },
+  };
 }
 
 test('tick consumes an event, creates a ticket, and claims it', () => {
@@ -207,6 +266,127 @@ test('failed deliveries can be replayed and sources/workers can be toggled', () 
   engine.toggleWorker(worker.id);
   assert.equal(worker.paused, false);
   cleanup();
+});
+
+test('GitHub webhook verifies signatures, dedupes deliveries, and normalizes issues', async () => {
+  const context = await httpFixture();
+  try {
+    const payload = issuePayload();
+    const first = await githubRequest(context.base, { payload });
+    assert.equal(first.status, 202);
+    const firstBody = await first.json();
+    assert.equal(firstBody.duplicate, false);
+    assert.equal(firstBody.event.kind, 'issue.opened');
+    assert.equal(firstBody.event.status, 'pending');
+
+    assert.equal(context.store.state.events.length, 1);
+    const event = context.store.state.events[0];
+    assert.equal(event.externalId, 'GH-42');
+    assert.equal(event.actor, 'octocat');
+    assert.equal(event.priority, 'high');
+    assert.deepEqual(event.labels, ['ready-for-agent', 'high']);
+    assert.equal(event.dedupeKey, 'src_test:github:delivery-1');
+    assert.equal(context.store.state.sources[0].eventCount, 1);
+
+    const replay = await githubRequest(context.base, { payload });
+    assert.equal(replay.status, 202);
+    const replayBody = await replay.json();
+    assert.equal(replayBody.duplicate, true);
+    assert.equal(context.store.state.events.length, 1);
+  } finally {
+    await context.close();
+  }
+});
+
+test('GitHub webhook records unsupported and metadata-only events as ignored', async () => {
+  const context = await httpFixture();
+  try {
+    const edited = await githubRequest(context.base, {
+      delivery: 'delivery-edit',
+      payload: issuePayload('edited', 43),
+    });
+    assert.equal(edited.status, 202);
+    const editedBody = await edited.json();
+    assert.equal(editedBody.event.kind, 'issue.updated');
+    assert.equal(editedBody.event.status, 'ignored');
+    assert.match(editedBody.event.ignoredReason, /字段更新/);
+
+    const unsupported = await githubRequest(context.base, {
+      event: 'pull_request',
+      delivery: 'delivery-pr',
+      payload: {
+        action: 'opened',
+        repository: { full_name: 'acme/self-loop' },
+        pull_request: { number: 7 },
+      },
+    });
+    assert.equal(unsupported.status, 202);
+    const unsupportedBody = await unsupported.json();
+    assert.equal(unsupportedBody.event.kind, 'github.pull_request');
+    assert.equal(unsupportedBody.event.status, 'ignored');
+    assert.match(unsupportedBody.event.ignoredReason, /不支持的 GitHub 事件/);
+  } finally {
+    await context.close();
+  }
+});
+
+test('GitHub webhook rejects invalid signatures without writing events', async () => {
+  const context = await httpFixture();
+  try {
+    const payload = issuePayload();
+    const invalid = await githubRequest(context.base, {
+      delivery: 'delivery-invalid',
+      payload,
+      signature: 'sha256=deadbeef',
+    });
+    assert.equal(invalid.status, 401);
+
+    const missing = await githubRequest(context.base, {
+      delivery: 'delivery-missing',
+      payload,
+      signature: null,
+    });
+    assert.equal(missing.status, 401);
+
+    const wrongRepository = await githubRequest(context.base, {
+      delivery: 'delivery-wrong-repo',
+      payload: {
+        ...payload,
+        repository: { full_name: 'other/self-loop' },
+      },
+    });
+    assert.equal(wrongRepository.status, 503);
+    assert.equal(context.store.state.events.length, 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test('source APIs redact webhook secrets', async () => {
+  const context = await httpFixture();
+  try {
+    const response = await fetch(`${context.base}/api/sources`);
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.doesNotMatch(body, /test-secret/);
+    assert.match(body, /••••••/);
+
+    const overview = await fetch(`${context.base}/api/overview`).then((item) => item.text());
+    assert.doesNotMatch(overview, /test-secret/);
+    assert.match(overview, /••••••/);
+
+    const patch = await fetch(`${context.base}/api/sources/src_test`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: { webhookSecret: 'rotated-secret' } }),
+    });
+    assert.equal(patch.status, 200);
+    const patchBody = await patch.json();
+    assert.equal(patchBody.source.config.webhookSecret, '••••••');
+    assert.equal(context.store.state.sources[0].config.webhookSecret, 'rotated-secret');
+  } finally {
+    await context.close();
+  }
 });
 
 test('the HTTP API serves the console and accepts events', async () => {

@@ -676,6 +676,7 @@ export class RouterEngine {
     if (existing) return { event: existing, duplicate: true };
 
     const at = nowIso(now);
+    const ignoredReason = input.ignoredReason || null;
     const event = {
       id: makeId('evt'),
       sourceId: source.id,
@@ -692,22 +693,24 @@ export class RouterEngine {
       acceptance: input.acceptance || [],
       scope: input.scope || [],
       risk: input.risk || 'medium',
-      status: 'pending',
+      status: ignoredReason ? 'ignored' : 'pending',
       receivedAt: at,
-      consumedAt: null,
+      consumedAt: ignoredReason ? at : null,
       ticketId: null,
-      ignoredReason: null,
+      ignoredReason,
     };
     this.state.events.unshift(event);
     source.lastEventAt = at;
     source.eventCount = Number(source.eventCount || 0) + 1;
 
     appendAudit(this.state, {
-      action: 'event.received',
+      action: ignoredReason ? 'event.ignored' : 'event.received',
       entity: 'event',
       entityId: event.id,
-      detail: `${source.name} · ${event.kind} · ${event.title}`,
-      tone: 'info',
+      detail: ignoredReason
+        ? `${source.name} · ${ignoredReason}`
+        : `${source.name} · ${event.kind} · ${event.title}`,
+      tone: ignoredReason ? 'muted' : 'info',
     }, now);
 
     if (!silent) this.store.save();
@@ -751,6 +754,25 @@ export class RouterEngine {
       entityId: source.id,
       detail: `${source.name} ${source.status === 'paused' ? '已暂停' : '已恢复'}`,
       tone: source.status === 'paused' ? 'warn' : 'success',
+    }, this.now());
+    this.store.save();
+    return source;
+  }
+
+  updateSource(id, patch = {}) {
+    const source = this.state.sources.find((candidate) => candidate.id === id);
+    if (!source) throw new Error(`unknown source: ${id}`);
+    if (typeof patch.name === 'string' && patch.name.trim()) source.name = patch.name.trim();
+    if (patch.config && typeof patch.config === 'object' && !Array.isArray(patch.config)) {
+      source.config = { ...(source.config || {}), ...patch.config };
+    }
+    source.health = '配置已更新，等待事件';
+    appendAudit(this.state, {
+      action: 'source.updated',
+      entity: 'source',
+      entityId: source.id,
+      detail: `更新连接器配置：${source.name} (${source.kind})`,
+      tone: 'info',
     }, this.now());
     this.store.save();
     return source;
