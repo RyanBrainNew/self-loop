@@ -11,13 +11,14 @@ the `package.json` license field in sync.
 
 - `scripts/` - scheduler-agnostic core (`setup-project`, `run`, `triage`,
   `select`, `retro`, `router`, `verifier`, `outbox`, `executors`, `lib`,
-  `precheck`, `init-memory`, tests).
+  `precheck`, `init-memory`, optional `sqlite-store`, `migrate-store`,
+  `e2e-executor`, tests).
 - `references/` - workflow, memory, and policy documentation.
 - `templates/memory/` - generic project memory templates.
 - `adapters/orca/` - optional Orca setup, prompts, and precheck.
 - `server/` - local-first Router console: HTTP API, demo seed, project-state
   adapter, persistent multi-repo registry (`project-store.mjs`), local write
-  auth, and the dependency-free web UI.
+  auth, Slack/Jira connector adapters, and the dependency-free web UI.
 - `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
 
@@ -39,6 +40,19 @@ the `package.json` license field in sync.
   from the API.
 - Router ticks only enqueue Outbox deliveries; outbound network calls happen
   in `router outbox flush`. Delivery history is durable in `.loop/outbox.json`.
+- Connectors only append normalized `task` Inbox events through the Router.
+  They never write Ticket state directly. A task event still passes Task Card,
+  acceptance, lease, and Verifier gates.
+- Slack ingress verifies the raw-body signing secret and timestamp window.
+  Jira advances `.loop/connectors/jira.json` only after a complete successful
+  scan; 429/auth failures preserve the previous cursor.
+- Multi-project webhook ingress selects the owning project: GitHub by
+  `repository.full_name`, Slack by per-project signing secret and
+  `allowedChannels`. Never route an inbound task to the currently selected
+  project by accident.
+- `storage.backend` is `json` by default. The optional `sqlite` backend uses
+  `node:sqlite`, keeps JSON as a mirror, and enforces unique event ids and
+  Outbox idempotency keys. Hosted PostgreSQL remains ADR 0013.
 - Core scripts must not assume the current directory or a project-local `loop/`
   directory. Accept `--repo`, then `SELF_LOOP_REPO`, then legacy `LOOP_REPO`.
 - All git operations, output, and memory paths stay inside the target repo.
@@ -63,9 +77,12 @@ the `package.json` license field in sync.
 ```bash
 npm test
 node --test scripts/self-loop.test.mjs
+node --test scripts/sqlite-store.test.mjs
 node --test server/server.test.mjs
 npm run serve
 npm run serve:project -- /path/to/project
+npm run migrate:sqlite -- --repo /path/to/project --dry-run
+npm run test:e2e:codex
 node scripts/setup-project.mjs --repo /path/to/project --dry-run
 node scripts/init-memory.mjs --repo /path/to/project --dry-run
 node scripts/run.mjs router status --repo /path/to/project --json
@@ -79,5 +96,7 @@ node scripts/router.mjs outbox flush --repo /path/to/project
 - Update `references/SETUP.md`, `references/CONFIG.md`, `references/ROUTER.md`,
   and `references/MEMORY.md` when changing setup, configuration, paths, state,
   or workflow behavior.
+- Keep `node:sqlite` optional so Node 20 and dependency-free JSON mode keep
+  working. Do not make a real agent login a CI prerequisite.
 - Use `rg` for string/config searches; use MCP graph tools when available for
   code discovery.

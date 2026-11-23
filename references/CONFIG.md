@@ -200,6 +200,91 @@ a bot token with `channel`, or an incoming webhook URL.
 | `outbox.requestTimeoutMs` | `20000` | Per-request network timeout |
 | `outbox.notifyOn` | Review/Blocked/Failed/Done | Ticket states that enqueue a status delivery |
 
+## Connectors
+
+Connector credentials stay in environment variables; `.self-loop.json` stores
+only the environment variable name and non-secret routing fields.
+
+```json
+{
+  "connectors": {
+    "github": {
+      "webhookSecretEnv": "SELF_LOOP_GITHUB_WEBHOOK_SECRET"
+    },
+    "slack": {
+      "enabled": true,
+      "signingSecretEnv": "SLACK_SIGNING_SECRET",
+      "botTokenEnv": "SLACK_BOT_TOKEN",
+      "allowedChannels": ["C01234567"],
+      "respondToMessages": false
+    },
+    "jira": {
+      "enabled": true,
+      "baseUrl": "https://team.atlassian.net",
+      "email": "loop@example.com",
+      "tokenEnv": "JIRA_API_TOKEN",
+      "project": "LOOP",
+      "jql": "labels = agent-ready",
+      "pollMinutes": 5,
+      "initialLookbackMinutes": 1440,
+      "pageSize": 50,
+      "fieldMap": {
+        "title": "summary",
+        "body": "description",
+        "acceptance": "customfield_10042",
+        "priority": "priority.name",
+        "labels": "labels",
+        "status": "status.name"
+      }
+    }
+  }
+}
+```
+
+Slack webhook ingress is `POST /hooks/slack`; it verifies
+`X-Slack-Signature` against the raw body and rejects timestamps older than five
+minutes. Events and `/loop` commands become durable `task` Inbox events, keyed
+by channel + timestamp or trigger id. The ticket keeps the Slack channel and
+thread timestamp so Outbox replies return to the same thread.
+
+GitHub ingress selects the registered project whose repository matches
+`repository.full_name`; Slack ingress verifies every enabled project's signing
+secret and uses `allowedChannels` to disambiguate. Give each project a distinct
+Slack signing secret when one console serves multiple repositories.
+
+Jira polling reads `connectors.jira` and keeps its cursor at
+`.loop/connectors/jira.json`. The JQL is the configured query (or
+`project = "<project>"`) plus `updated >= "<cursor>"`. A cursor is advanced only
+after a complete successful page scan. HTTP 429, authentication errors, and
+network failures are surfaced on the Sources page without replacing Router
+gates.
+
+## Storage
+
+```json
+{
+  "storage": {
+    "backend": "sqlite",
+    "sqlitePath": ".loop/self-loop.db"
+  }
+}
+```
+
+`backend` is `json` by default. `sqlite` is opt-in and requires a Node build
+with `node:sqlite` (Node 24 recommended; older Node 22 releases may need
+`--experimental-sqlite`). The database stores the Router state, Tickets, Inbox
+events, and Outbox deliveries in transactions.
+Events and Outbox idempotency keys have database uniqueness constraints. JSON
+files remain as a readable mirror and compatibility fallback.
+
+Migrate or inspect without deleting the old files:
+
+```bash
+node scripts/migrate-store.mjs --repo /path/to/project --dry-run
+node scripts/migrate-store.mjs --repo /path/to/project
+node scripts/migrate-store.mjs --repo /path/to/project --export
+```
+
 ## Environment variables
 
 Every applicable `SELF_LOOP_*` variable has a legacy `LOOP_*` fallback.
@@ -234,6 +319,8 @@ Every applicable `SELF_LOOP_*` variable has a legacy `LOOP_*` fallback.
 | Verifier timeout | `SELF_LOOP_VERIFY_TIMEOUT_MINUTES` | `LOOP_VERIFY_TIMEOUT_MINUTES` |
 | Executor adapter | `SELF_LOOP_EXECUTOR_ADAPTER` | - |
 | Executor timeout | `SELF_LOOP_EXECUTOR_TIMEOUT_MINUTES` | - |
+| Storage backend | `SELF_LOOP_STORAGE_BACKEND` | - |
+| SQLite file | `SELF_LOOP_SQLITE_PATH` | - |
 
 GitHub also accepts `GITHUB_TOKEN` / `GH_TOKEN`, and `GITHUB_REPOSITORY`.
 

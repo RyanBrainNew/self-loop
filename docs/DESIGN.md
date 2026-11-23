@@ -463,14 +463,21 @@ Implemented in the first version:
 - configurable `language` for PR titles/bodies and person-facing Router text;
 - `maxConcurrent`, `wait` / `background` dispatch, and independent verification
   of each Ticket;
-- `tick`, `status`, `verify`, `report`, `recover`, `clean`, and `watchdog`.
+- `tick`, `status`, `verify`, `report`, `recover`, `clean`, `cancel`, `outbox`,
+  and `watchdog`;
+- executor adapters with timeout, process-death detection, cancellation, and
+  logs;
+- durable Outbox delivery with GitHub/Jira/Slack adapters;
+- GitHub/Slack inbound verification and Jira incremental polling;
+- optional SQLite storage with JSON migration and a readable mirror.
 
 Deliberately deferred:
 
 - PR follow-up, review-comment handling, and merge automation (merge is never
   automatic);
 - optional semantic Reviewer and LLM-drafted Task Cards;
-- large-scale queueing, fair scheduling, and cross-repository inboxes;
+- large-scale queueing, fair scheduling, hosted cross-tenant inboxes;
 - container or sandbox isolation;
+- hosted OAuth installation and secret rotation;
 - live GitHub integration tests for comments and claims; unit and CLI tests use
   local fixtures and fake repositories.
