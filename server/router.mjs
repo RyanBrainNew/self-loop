@@ -1,4 +1,5 @@
 import { appendAudit, makeId, nowIso } from './store.mjs';
+import { nextCronRun, normalizeAutomation } from '../scripts/automations.mjs';
 
 const OCCUPYING_STATES = new Set(['claimed', 'working', 'verifying']);
 const OPEN_STATES = new Set([
@@ -28,6 +29,12 @@ const IGNORED_KINDS = new Map([
 ]);
 
 const PRIORITY_WEIGHT = { urgent: 0, high: 1, normal: 2, low: 3 };
+
+function nextAutomationRun(automation, now) {
+  return automation.scheduleType === 'cron'
+    ? nextCronRun(automation.cron, now, automation.timezone)
+    : new Date(now + automation.everyMinutes * 60_000).toISOString();
+}
 
 export const PIPELINE = [
   { key: 'queued', label: 'Queued', states: ['queued'] },
@@ -765,29 +772,14 @@ export class RouterEngine {
   }
 
   addAutomation(input = {}) {
-    const everyMinutes = Math.max(1, Number(input.everyMinutes) || 60);
-    const automation = {
+    const automation = normalizeAutomation({
+      ...input,
       id: makeId('aut'),
-      name: String(input.name || input.title || 'Scheduled task'),
-      title: String(input.title || input.name || 'Scheduled task'),
-      body: String(input.body || ''),
-      acceptance: Array.isArray(input.acceptance)
-        ? input.acceptance.map(String).filter(Boolean)
-        : String(input.acceptance || '')
-          .split(/[;\n]/)
-          .map((item) => item.trim())
-          .filter(Boolean),
-      everyMinutes,
-      schedule: String(input.schedule || `每 ${everyMinutes} 分钟`),
-      priority: String(input.priority || 'normal'),
-      labels: Array.isArray(input.labels) ? input.labels.map(String) : ['automation'],
-      enabled: input.enabled !== false,
       createdAt: nowIso(),
-      updatedAt: nowIso(),
-      lastRunAt: null,
-      nextRunAt: nowIso(),
-      lastEventId: null,
-    };
+      nextRunAt: null,
+    }, this.now());
+    automation.nextRunAt = nextAutomationRun(automation, this.now());
+    automation.runs = [];
     this.state.automations.push(automation);
     appendAudit(this.state, {
       action: 'automation.created',
@@ -806,7 +798,7 @@ export class RouterEngine {
     automation.enabled = !automation.enabled;
     automation.updatedAt = nowIso();
     automation.nextRunAt = automation.enabled
-      ? new Date(this.now() + automation.everyMinutes * 60_000).toISOString()
+      ? nextAutomationRun(automation, this.now())
       : automation.nextRunAt;
     appendAudit(this.state, {
       action: automation.enabled ? 'automation.enabled' : 'automation.paused',
@@ -817,6 +809,55 @@ export class RouterEngine {
     }, this.now());
     this.store.save();
     return automation;
+  }
+
+  editAutomation(id, patch = {}) {
+    const index = this.state.automations.findIndex((item) => item.id === id);
+    if (index < 0) throw new Error(`unknown automation: ${id}`);
+    const existing = this.state.automations[index];
+    const merged = normalizeAutomation({
+      ...existing,
+      ...patch,
+      id,
+      createdAt: existing.createdAt,
+      runs: existing.runs || [],
+    }, this.now());
+    merged.nextRunAt = nextAutomationRun(merged, this.now());
+    this.state.automations[index] = merged;
+    appendAudit(this.state, {
+      action: 'automation.updated',
+      entity: 'automation',
+      entityId: merged.id,
+      detail: `更新定时自动化：${merged.name}`,
+      tone: 'info',
+    }, this.now());
+    this.store.save();
+    return merged;
+  }
+
+  removeAutomation(id) {
+    const index = this.state.automations.findIndex((item) => item.id === id);
+    if (index < 0) throw new Error(`unknown automation: ${id}`);
+    const [removed] = this.state.automations.splice(index, 1);
+    appendAudit(this.state, {
+      action: 'automation.removed',
+      entity: 'automation',
+      entityId: removed.id,
+      detail: `删除定时自动化：${removed.name}`,
+      tone: 'warn',
+    }, this.now());
+    this.store.save();
+    return removed;
+  }
+
+  automationHistory(id) {
+    const automation = this.state.automations.find((item) => item.id === id);
+    if (!automation) throw new Error(`unknown automation: ${id}`);
+    return {
+      id: automation.id,
+      name: automation.name,
+      runs: [...(automation.runs || [])].reverse(),
+    };
   }
 
   runAutomation(id, now = this.now()) {
@@ -849,9 +890,13 @@ export class RouterEngine {
       connector: { automationId: automation.id },
     }, now);
     automation.lastRunAt = stamp;
-    automation.nextRunAt = new Date(now + automation.everyMinutes * 60_000).toISOString();
+    automation.nextRunAt = nextAutomationRun(automation, now);
     automation.updatedAt = stamp;
     automation.lastEventId = event.event.id;
+    automation.runs = [
+      ...(automation.runs || []),
+      { at: stamp, eventId: event.event.id, duplicate: event.duplicate },
+    ].slice(-20);
     appendAudit(this.state, {
       action: 'automation.run',
       entity: 'automation',

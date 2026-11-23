@@ -469,15 +469,17 @@ Implemented in the first version:
   logs;
 - durable Outbox delivery with GitHub/Jira/Slack adapters;
 - GitHub/Slack inbound verification and Jira incremental polling;
+- GitHub PR review-comment follow-ups for explicit `/loop` / `@self-loop`
+  commands, with PR/comment links and delivery-id dedupe;
 - optional SQLite storage with JSON migration and a readable mirror.
 
 Deliberately deferred:
 
-- PR follow-up, review-comment handling, and merge automation (merge is never
-  automatic);
+- merge automation (merge is never automatic);
 - optional semantic Reviewer and LLM-drafted Task Cards;
 - large-scale queueing, fair scheduling, hosted cross-tenant inboxes;
-- container or sandbox isolation;
+- built-in container orchestration (operators can use `verifier.commandPrefix`
+  to route gates through Docker/Podman or another wrapper);
 - hosted OAuth installation and secret rotation;
 - live GitHub integration tests for comments and claims; unit and CLI tests use
   local fixtures and fake repositories.

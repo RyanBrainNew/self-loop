@@ -1,6 +1,6 @@
 {
   "name": "self-loop",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Project-agnostic issue and retrospective loop skill",
   "license": "Apache-2.0",
@@ -13,6 +13,7 @@
     "test:skill": "node --test scripts/self-loop.test.mjs",
     "test:server": "node --test server/server.test.mjs",
     "test:e2e:codex": "node scripts/e2e-executor.mjs --adapter codex",
+    "test:github:live": "node scripts/github-live-check.mjs",
     "serve": "node server/index.mjs",
     "serve:project": "node server/index.mjs --repo",
     "rotate-token": "node server/index.mjs --rotate-token",

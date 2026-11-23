@@ -129,6 +129,7 @@ const TERMS = {
   remoteWorker: ['Remote worker', '远程执行器', '在另一台机器上注册、心跳并领取任务的执行器。'],
   heartbeat: ['Heartbeat', '心跳', '执行器定期报到，证明自己仍然在线。'],
   metrics: ['Metrics', '指标', '队列长度、任务状态、执行器健康等可监控数字。'],
+  observability: ['Observability', '可观测性', '把队列、失败、Worker 和连接器健康集中到一页。'],
   glossary: ['Glossary', '术语表', '把界面里的英文术语翻译成中文，并解释它解决什么问题。'],
 };
 
@@ -153,6 +154,11 @@ const state = {
     inbox: 'all',
     outbox: 'all',
     tickets: 'all',
+  },
+  audit: {
+    query: '',
+    source: 'all',
+    status: 'all',
   },
   modal: null,
   stream: null,
@@ -335,6 +341,7 @@ function pageTitle(route) {
     policy: 'policy',
     projects: 'projects',
     automations: 'automations',
+    observability: 'observability',
     glossary: 'glossary',
   }[route.name] || 'overview';
   return term(key);
@@ -352,6 +359,7 @@ function pageTitleText(route) {
     policy: 'Policy 策略',
     projects: 'Projects 项目',
     automations: 'Automations 定时自动化',
+    observability: 'Observability 可观测性',
     glossary: 'Glossary 术语表',
   };
   return labels[route.name] || 'Overview 总览';
@@ -379,6 +387,7 @@ function labelKey(label) {
     workers: 'workers',
     policy: 'policy',
     automations: 'automations',
+    observability: 'observability',
     glossary: 'glossary',
   };
   return map[normalized] || normalized;
@@ -434,6 +443,7 @@ function shell() {
           <div class="nav-section">Runtime · 运行时</div>
           ${navItem('sources', 'Sources', 'sources', counts.sources, route)}
           ${navItem('workers', 'Workers', 'workers', counts.workersOnline, route)}
+          ${navItem('observability', 'Observability', 'logs', '', route)}
           ${navItem('policy', 'Policy', 'policy', '', route)}
           <div class="nav-section">Help · 帮助</div>
           ${navItem('glossary', 'Glossary', 'search', '', route)}
@@ -492,6 +502,7 @@ function view() {
   if (route.name === 'outbox') return outboxView();
   if (route.name === 'sources') return sourcesView();
   if (route.name === 'workers') return workersView();
+  if (route.name === 'observability') return observabilityView();
   if (route.name === 'policy') return policyView();
   if (route.name === 'projects') return projectsView();
   if (route.name === 'automations') return automationsView();
@@ -708,6 +719,183 @@ function overviewView() {
             <div><div class="card-title">Focus · 关注</div><div class="card-sub">最需要人看的 Ticket</div></div>
           </div>
           ${focusList(blocked, active)}
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+function observabilityView() {
+  const data = state.data;
+  const counts = computeCounts(data);
+  const health = data.health || {};
+  const summary = data.observability || {};
+  const ticketStates = summary.states || {};
+  const deliveryStates = summary.deliveryStates || {};
+  const remoteWorkers = data.remoteWorkers || [];
+  const degradedSources = data.sources.filter((source) => source.status === 'degraded');
+  const offlineWorkers = remoteWorkers.filter((worker) => worker.online === false);
+  const alerts = [
+    counts.blocked
+      ? {
+          tone: 'danger',
+          title: `${counts.blocked} 个 Ticket 需要人工介入`,
+          detail: '检查 Blocked / Failed 任务，回答、重试或恢复后 Router 才会继续。',
+          route: '#/tickets',
+        }
+      : null,
+    counts.deliveriesFailed
+      ? {
+          tone: 'danger',
+          title: `${counts.deliveriesFailed} 条 Outbox 投递失败或进入死信`,
+          detail: '确认凭据与目标地址后重投；失败不会自动改 Ticket 状态。',
+          route: '#/outbox',
+        }
+      : null,
+    degradedSources.length
+      ? {
+          tone: 'warn',
+          title: `${degradedSources.length} 个 Source 处于降级状态`,
+          detail: degradedSources.map((source) => source.name).join(' · '),
+          route: '#/sources',
+        }
+      : null,
+    offlineWorkers.length
+      ? {
+          tone: 'warn',
+          title: `${offlineWorkers.length} 个远程 Worker 离线`,
+          detail: '远程 Worker 超过心跳窗口会被标记离线，lease 仍按 Router 规则处理。',
+          route: '#/workers',
+        }
+      : null,
+  ].filter(Boolean);
+  const stateRows = Object.entries(ticketStates)
+    .map(([name, value]) => ({
+      name,
+      value: Number(value) || 0,
+      label: STATE_LABEL[name] || name,
+      termKey: STATE_TERM[name] || name,
+    }))
+    .filter((item) => item.value > 0)
+    .sort((left, right) => right.value - left.value);
+  const deliveryRows = Object.entries(deliveryStates)
+    .map(([name, value]) => ({ name, value: Number(value) || 0 }))
+    .filter((item) => item.value > 0)
+    .sort((left, right) => right.value - left.value);
+  const totalStates = stateRows.reduce((sum, item) => sum + item.value, 0) || 1;
+  const totalDeliveries = deliveryRows.reduce((sum, item) => sum + item.value, 0) || 1;
+  const uptime = Number(summary.router?.uptimeSeconds ?? health.uptimeSeconds ?? 0);
+  const uptimeLabel = uptime >= 3600
+    ? `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`
+    : uptime >= 60
+      ? `${Math.floor(uptime / 60)}m ${uptime % 60}s`
+      : `${uptime}s`;
+  return `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">Observability <span class="page-title-zh">可观测性</span></h1>
+        <p class="page-sub">队列、失败、连接器、Worker 与 Router 健康集中在一页；指标同时暴露给 Prometheus。</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn" data-action="refresh" type="button">${icon('refresh')} 刷新</button>
+        <a class="btn" href="/metrics" target="_blank" rel="noreferrer">${icon('external')} 打开 /metrics</a>
+      </div>
+    </div>
+    <div class="kpi-grid">
+      ${kpi('Router', summary.router?.paused ? 'paused' : 'live', `${uptimeLabel} uptime · 运行时长`, summary.router?.paused ? 'var(--amber)' : 'var(--green)', 'zap')}
+      ${kpi('Inbox', counts.pendingEvents, 'pending events · 待消费事件', counts.pendingEvents ? 'var(--amber)' : 'var(--green)', 'inbox')}
+      ${kpi('Active tickets', counts.activeTickets, `${data.config.maxConcurrent} slots · 并发槽`, 'var(--blue)', 'tickets')}
+      ${kpi('Outbox', counts.deliveriesPending, `${counts.deliveriesFailed} failed · 失败/死信`, counts.deliveriesFailed ? 'var(--red)' : 'var(--green)', 'outbox')}
+      ${kpi('Workers', `${counts.workersBusy}/${counts.workersOnline}`, 'busy / online · 忙碌/在线', counts.workersOnline ? 'var(--cyan)' : 'var(--red)', 'workers')}
+    </div>
+    <div class="grid grid-2-1">
+      <div class="stack">
+        <section class="card">
+          <div class="card-header">
+            <div><div class="card-title">Queue health · 队列健康</div><div class="card-sub">Router 运行时最先需要看的一组数字</div></div>
+            <span class="badge ${health.status === 'error' ? 'badge-red' : health.status === 'empty' ? 'badge-amber' : 'badge-green'}">${esc(health.status || 'live')}</span>
+          </div>
+          <div class="metric-grid">
+            <div class="metric-item"><span>Inbox pending</span><b>${summary.queues?.inboxPending ?? counts.pendingEvents}</b><small>待处理事件</small></div>
+            <div class="metric-item"><span>Active tickets</span><b>${summary.queues?.ticketsActive ?? counts.activeTickets}</b><small>进行中的任务</small></div>
+            <div class="metric-item"><span>Outbox pending</span><b>${summary.queues?.outboxPending ?? counts.deliveriesPending}</b><small>待发送消息</small></div>
+            <div class="metric-item"><span>Outbox dead</span><b>${summary.queues?.outboxDead ?? data.deliveries.filter((item) => item.state === 'dead').length}</b><small>需要人工重投</small></div>
+          </div>
+          <div class="split-line"></div>
+          <div class="obs-health">
+            <div><span>Last tick</span><b>${health.lastTickAt || data.meta.lastTickAt ? timeAgo(health.lastTickAt || data.meta.lastTickAt) : '—'}</b></div>
+            <div><span>State</span><b class="mono">${esc(health.stateFile || (data.capabilities?.mode === 'project' ? '.loop/state.json' : 'demo state'))}</b></div>
+            <div><span>Version</span><b class="mono">${esc(data.version || '1')}</b></div>
+            <div><span>Uptime</span><b class="mono">${esc(uptimeLabel)}</b></div>
+          </div>
+          ${health.error ? `<div class="mode-banner" style="border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.07)">${icon('alert')}<div><div class="mode-banner-title">读取项目状态失败</div><div class="mode-banner-sub mono">${esc(health.error)}</div></div></div>` : ''}
+        </section>
+        <section class="card">
+          <div class="card-header">
+            <div><div class="card-title">Ticket state distribution · 任务状态分布</div><div class="card-sub">用来判断积压发生在排队、执行、验证还是人工环节</div></div>
+            <span class="badge badge-muted">${totalStates} tickets</span>
+          </div>
+          ${stateRows.length ? `<div class="distribution">${stateRows.map((item) => `
+            <div class="distribution-row">
+              <div class="distribution-label">${term(item.termKey)}</div>
+              <div class="distribution-track"><span style="width:${(item.value / totalStates) * 100}%;background:${item.name === 'blocked' || item.name === 'failed' ? 'var(--red)' : item.name === 'done' ? 'var(--green)' : item.name === 'awaiting_review' ? 'var(--cyan)' : 'var(--blue)'}"></span></div>
+              <b>${item.value}</b>
+            </div>`).join('')}</div>` : '<div class="inline-empty">当前没有 Ticket</div>'}
+        </section>
+        <section class="card">
+          <div class="card-header">
+            <div><div class="card-title">Delivery distribution · 投递分布</div><div class="card-sub">Outbox 只负责送达，失败不会回写 Ticket</div></div>
+            <span class="badge badge-muted">${totalDeliveries} deliveries</span>
+          </div>
+          ${deliveryRows.length ? `<div class="distribution">${deliveryRows.map((item) => `
+            <div class="distribution-row">
+              <div class="distribution-label">${deliveryBadge(item.name)}</div>
+              <div class="distribution-track"><span style="width:${(item.value / totalDeliveries) * 100}%;background:${item.name === 'sent' ? 'var(--green)' : item.name === 'pending' ? 'var(--amber)' : item.name === 'failed' || item.name === 'dead' ? 'var(--red)' : 'var(--purple)'}"></span></div>
+              <b>${item.value}</b>
+            </div>`).join('')}</div>` : '<div class="inline-empty">当前没有投递记录</div>'}
+        </section>
+      </div>
+      <div class="stack">
+        <section class="card">
+          <div class="card-header">
+            <div><div class="card-title">Alerts · 需要关注</div><div class="card-sub">按严重程度聚合，不替代 Router 门禁</div></div>
+            <span class="badge ${alerts.length ? 'badge-amber' : 'badge-green'}">${alerts.length} / ${alerts.length ? 'attention' : 'clear'}</span>
+          </div>
+          ${alerts.length ? `<div class="list">${alerts.map((alert) => `
+            <button class="list-row obs-alert" data-route="${alert.route}" type="button">
+              <span style="color:${alert.tone === 'danger' ? 'var(--red)' : 'var(--amber)'};margin-top:2px">${icon(alert.tone === 'danger' ? 'alert' : 'clock')}</span>
+              <div class="list-main"><div class="list-title">${esc(alert.title)}</div><div class="list-sub">${esc(alert.detail)}</div></div>
+              ${icon('chevron')}
+            </button>`).join('')}</div>` : `<div class="empty-state" style="padding:28px 12px"><div class="empty-icon">${icon('check')}</div><div class="empty-title">当前没有阻塞性告警</div><p class="empty-sub">继续观察 Inbox、Outbox 和 Worker 心跳即可。</p></div>`}
+        </section>
+        <section class="card">
+          <div class="card-header">
+            <div><div class="card-title">Connector & Worker · 连接器与执行器</div><div class="card-sub">健康状态来自真实配置和心跳</div></div>
+            <span class="badge badge-muted">${data.sources.length + data.workers.length + remoteWorkers.length}</span>
+          </div>
+          <div class="list">
+            ${data.sources.map((source) => `<div class="list-row"><span class="live-dot ${source.status === 'healthy' ? '' : 'paused'}"></span><div class="list-main"><div class="list-title">${esc(source.name)}</div><div class="list-sub">Source · ${esc(source.kind)}</div></div>${source.status === 'healthy' ? '<span class="badge badge-green">healthy</span>' : '<span class="badge badge-amber">degraded</span>'}</div>`).join('')}
+            ${data.workers.map((worker) => `<div class="list-row"><span class="live-dot ${worker.status === 'offline' ? 'paused' : ''}"></span><div class="list-main"><div class="list-title">${esc(worker.name)}</div><div class="list-sub">Worker · ${esc(worker.kind)}</div></div>${workerBadge(worker)}</div>`).join('')}
+            ${remoteWorkers.map((worker) => `<div class="list-row"><span class="live-dot ${worker.online === false ? 'paused' : ''}"></span><div class="list-main"><div class="list-title">${esc(worker.name)}</div><div class="list-sub">Remote worker · heartbeat ${timeAgo(worker.lastHeartbeatAt)}</div></div>${workerBadge(worker)}</div>`).join('')}
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-header">
+            <div><div class="card-title">Prometheus · 指标出口</div><div class="card-sub">可直接接 Grafana、VictoriaMetrics 或云监控</div></div>
+            <a class="badge badge-cyan" href="/metrics" target="_blank" rel="noreferrer">/metrics</a>
+          </div>
+          <div class="code metrics-snippet">curl -s http://127.0.0.1:4317/metrics
+
+# HELP self_loop_tickets Tickets by Router state
+self_loop_tickets{state="blocked"} ${ticketStates.blocked || 0}
+self_loop_tickets{state="done"} ${ticketStates.done || 0}
+self_loop_outbox_deliveries{state="dead"} ${deliveryStates.dead || 0}
+self_loop_router_up ${summary.router?.paused ? 0 : 1}</div>
+          <div class="explain-list" style="margin-top:10px">
+            <div><b>Metric · 指标</b><span>可被 Prometheus 定期抓取的时间序列。</span></div>
+            <div><b>Alert · 告警</b><span>由指标阈值触发，不代替 Ticket 的人工门禁。</span></div>
+            <div><b>Health · 健康</b><span>当前控制台读取状态、队列和心跳的综合视图。</span></div>
+          </div>
         </section>
       </div>
     </div>
@@ -1311,7 +1499,7 @@ function workersView() {
                 <div class="worker-icon">${icon('git')}</div>
                 <div style="min-width:0">
                   <div class="worker-name">${esc(worker.name)}</div>
-                  <div class="worker-kind">${esc(worker.kind)} · concurrency ${worker.concurrency || 1}</div>
+                  <div class="worker-kind">${esc(worker.kind)} · concurrency ${worker.concurrency || 1}${worker.version ? ` · v${esc(worker.version)}` : ''}</div>
                 </div>
                 <span style="margin-left:auto">${workerBadge(worker)}</span>
               </div>
@@ -1319,6 +1507,10 @@ function workersView() {
               <div class="worker-meta">
                 <div><div class="meta-label">Heartbeat · 心跳</div><div class="meta-value">${timeAgo(worker.lastHeartbeatAt)}</div></div>
                 <div><div class="meta-label">Capabilities · 能力</div><div class="meta-value">${esc((worker.capabilities || []).join(', ') || '—')}</div></div>
+              </div>
+              <div class="worker-actions">
+                ${caps.remoteWorkerWrite ? `<button class="btn btn-sm" data-action="rotate-remote-worker" data-id="${esc(worker.id)}" type="button">${icon('refresh')} 轮换 token</button>
+                <button class="btn btn-sm" data-action="revoke-remote-worker" data-id="${esc(worker.id)}" type="button">${icon('x')} 吊销</button>` : ''}
               </div>
             </article>`).join('')}</div>`
           : `<div class="inline-empty">还没有远程执行器。注册后会得到一次性 token，用 <code>router claim</code> / <code>router complete</code> 接入自己的机器。</div>`
@@ -1493,12 +1685,26 @@ function automationsView() {
             </div>
             <p class="automation-body">${esc(item.title || item.body || '')}</p>
             <div class="automation-meta">
+              <span>类型 <b>${esc(item.scheduleType === 'cron' ? 'Cron' : 'Interval')}</b></span>
               <span>下次 <b>${item.nextRunAt ? fmtDate(item.nextRunAt) : '—'}</b></span>
               <span>上次 <b>${item.lastRunAt ? timeAgo(item.lastRunAt) : '—'}</b></span>
             </div>
+            ${
+              (item.runs || []).length
+                ? `<details class="automation-history">
+                    <summary>运行历史 · ${item.runs.length} 次</summary>
+                    <div class="list">${[...item.runs].reverse().slice(0, 5).map((run) => `
+                      <div class="list-row">
+                        <div class="list-main"><div class="list-title mono">${esc(run.eventId)}</div><div class="list-sub">${fmtDate(run.at)}${run.duplicate ? ' · duplicate' : ''}</div></div>
+                      </div>`).join('')}</div>
+                  </details>`
+                : ''
+            }
             <div class="automation-actions">
               ${caps.automationWrite ? `<button class="btn btn-sm" data-action="run-automation" data-id="${esc(item.id)}" type="button">${icon('play')} 立即运行</button>
-              <button class="btn btn-sm" data-action="toggle-automation" data-id="${esc(item.id)}" type="button">${icon(item.enabled ? 'pause' : 'play')} ${item.enabled ? '暂停' : '启用'}</button>` : ''}
+              <button class="btn btn-sm" data-action="toggle-automation" data-id="${esc(item.id)}" type="button">${icon(item.enabled ? 'pause' : 'play')} ${item.enabled ? '暂停' : '启用'}</button>
+              <button class="btn btn-sm" data-action="edit-automation" data-id="${esc(item.id)}" type="button">${icon('logs')} 编辑</button>
+              <button class="btn btn-sm" data-action="delete-automation" data-id="${esc(item.id)}" type="button">${icon('x')} 删除</button>` : ''}
             </div>
           </article>`).join('')}</div>`
         : `<section class="card empty-state">
@@ -1526,6 +1732,30 @@ function policyView() {
   const caps = data.capabilities || {};
   const config = data.config;
   const readOnly = caps.configWrite ? '' : 'disabled';
+  const auditEntries = [...(data.audit || []), ...(data.consoleAudit || [])]
+    .map((entry) => ({
+      ...entry,
+      source: entry.source || 'router',
+      ok: entry.ok !== false,
+    }))
+    .filter((entry) => {
+      if (state.audit.source !== 'all' && entry.source !== state.audit.source) return false;
+      if (state.audit.status === 'ok' && !entry.ok) return false;
+      if (state.audit.status === 'error' && entry.ok) return false;
+      if (state.audit.query) {
+        const haystack = [
+          entry.actor,
+          entry.action,
+          entry.detail,
+          entry.ip,
+          entry.project,
+        ].join(' ').toLowerCase();
+        if (!haystack.includes(state.audit.query.toLowerCase())) return false;
+      }
+      return true;
+    })
+    .sort((left, right) => Date.parse(right.at || 0) - Date.parse(left.at || 0))
+    .slice(0, 80);
   return `
     <div class="page-head">
       <div>
@@ -1598,23 +1828,38 @@ function policyView() {
       </div>
     </section>
     <section class="card" style="margin-top:14px">
-      <div class="card-header"><div><div class="card-title">审计日志</div><div class="card-sub">所有人工干预与 Router 决策</div></div><span class="badge badge-muted">${data.audit.length}</span></div>
+      <div class="card-header">
+        <div><div class="card-title">审计日志</div><div class="card-sub">所有人工干预、控制台写操作与 Router 决策</div></div>
+        <span class="badge badge-muted">${auditEntries.length} / ${(data.audit || []).length + (data.consoleAudit || []).length}</span>
+      </div>
+      <div class="audit-filters">
+        <input class="input" id="audit-query" aria-label="搜索审计记录" value="${esc(state.audit.query)}" placeholder="搜索 actor / action / detail / IP">
+        <input class="input" id="audit-source" aria-label="按来源筛选审计" value="${state.audit.source === 'all' ? '' : esc(state.audit.source)}" placeholder="Source 来源，例如 router / console / direct">
+        <select id="audit-status" aria-label="按结果筛选审计">
+          <option value="all" ${state.audit.status === 'all' ? 'selected' : ''}>All results · 全部结果</option>
+          <option value="ok" ${state.audit.status === 'ok' ? 'selected' : ''}>Success · 成功</option>
+          <option value="error" ${state.audit.status === 'error' ? 'selected' : ''}>Rejected / failed · 失败</option>
+        </select>
+        <button class="btn btn-sm" data-action="apply-audit-filter" type="button">${icon('search')} 筛选</button>
+        <button class="btn btn-sm btn-ghost" data-action="reset-audit-filter" type="button">重置</button>
+      </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th><th>Ticket</th></tr></thead>
+          <thead><tr><th>Time 时间</th><th>Source 来源</th><th>Actor 操作者</th><th>Action 动作</th><th>Detail 详情</th><th>Result 结果</th><th>Ticket 任务单</th></tr></thead>
           <tbody>
-            ${data.audit
-              .slice(0, 20)
+            ${auditEntries
               .map(
                 (entry) => `<tr>
                   <td class="mono dim nowrap">${fmtDate(entry.at)}</td>
+                  <td><span class="badge badge-muted">${esc(entry.source)}</span></td>
                   <td class="mono">${esc(entry.actor)}</td>
                   <td class="mono">${esc(entry.action)}</td>
                   <td>${esc(entry.detail)}</td>
+                  <td><span class="badge ${entry.ok ? 'badge-green' : 'badge-red'}">${entry.ok ? 'ok' : 'error'}</span></td>
                   <td>${entry.ticketNumber ? `<span class="link" data-route="#/tickets/${entry.ticketId}">#${entry.ticketNumber}</span>` : '<span class="dim">—</span>'}</td>
                 </tr>`,
               )
-              .join('')}
+              .join('') || '<tr><td colspan="7" class="dim">没有匹配的审计记录</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1842,14 +2087,16 @@ function openSourceModal() {
   setTimeout(() => document.getElementById('src-name')?.focus(), 40);
 }
 
-function openAutomationModal() {
+function openAutomationModal(automation = null) {
+  const editing = Boolean(automation);
+  const scheduleType = automation?.scheduleType || (automation?.cron ? 'cron' : 'interval');
   state.modal = 'automation';
   modalRoot.innerHTML = `
     <div class="modal-backdrop" data-backdrop="true">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div class="modal-head">
           <div>
-            <div class="modal-title" id="modal-title">新增定时自动化</div>
+            <div class="modal-title" id="modal-title">${editing ? '编辑定时自动化' : '新增定时自动化'}</div>
             <div class="modal-sub">到点后向 Inbox 写入一条 task 事件；是否执行仍由 Router 的授权、lease 和门禁决定。</div>
           </div>
           <button class="btn btn-ghost btn-icon" data-action="close-modal" type="button" aria-label="关闭">${icon('x')}</button>
@@ -1858,53 +2105,83 @@ function openAutomationModal() {
           <div class="form-grid">
             <div class="field">
               <label for="auto-name">名称</label>
-              <input class="input" id="auto-name" required value="Daily dependency check">
+              <input class="input" id="auto-name" required value="${esc(automation?.name || 'Daily dependency check')}">
             </div>
             <div class="field">
-              <label for="auto-every">间隔（分钟）</label>
-              <input class="input" id="auto-every" type="number" min="1" value="1440" required>
+              <label for="auto-type">触发方式</label>
+              <select id="auto-type">
+                <option value="interval" ${scheduleType === 'interval' ? 'selected' : ''}>Interval · 固定间隔</option>
+                <option value="cron" ${scheduleType === 'cron' ? 'selected' : ''}>Cron · 日历表达式</option>
+              </select>
             </div>
             <div class="field full">
               <label for="auto-title">任务标题</label>
-              <input class="input" id="auto-title" required value="检查依赖升级并生成安全报告">
+              <input class="input" id="auto-title" required value="${esc(automation?.title || '检查依赖升级并生成安全报告')}">
+            </div>
+            <div class="field auto-interval">
+              <label for="auto-every">间隔（分钟）</label>
+              <input class="input" id="auto-every" type="number" min="1" value="${esc(automation?.everyMinutes || 1440)}">
+            </div>
+            <div class="field auto-cron">
+              <label for="auto-cron">Cron（分 时 日 月 周）</label>
+              <input class="input" id="auto-cron" value="${esc(automation?.cron || '0 9 * * 1-5')}" placeholder="0 9 * * 1-5">
+            </div>
+            <div class="field auto-cron">
+              <label for="auto-timezone">时区</label>
+              <input class="input" id="auto-timezone" value="${esc(automation?.timezone || 'Asia/Shanghai')}" placeholder="Asia/Shanghai">
             </div>
             <div class="field full">
               <label for="auto-body">任务正文</label>
-              <textarea id="auto-body">扫描依赖清单，列出可升级项和安全公告。</textarea>
+              <textarea id="auto-body">${esc(automation?.body || '扫描依赖清单，列出可升级项和安全公告。')}</textarea>
             </div>
             <div class="field full">
               <label for="auto-acceptance">验收项（用分号分隔）</label>
-              <input class="input" id="auto-acceptance" value="列出高风险依赖; 给出升级建议">
+              <input class="input" id="auto-acceptance" value="${esc((automation?.acceptance || ['列出高风险依赖', '给出升级建议']).join('; '))}">
             </div>
             <div class="field">
               <label for="auto-priority">优先级</label>
               <select id="auto-priority">
-                <option value="normal">normal · 普通</option>
-                <option value="high">high · 高</option>
-                <option value="urgent">urgent · 紧急</option>
-                <option value="low">low · 低</option>
+                <option value="normal" ${automation?.priority === 'normal' || !automation ? 'selected' : ''}>normal · 普通</option>
+                <option value="high" ${automation?.priority === 'high' ? 'selected' : ''}>high · 高</option>
+                <option value="urgent" ${automation?.priority === 'urgent' ? 'selected' : ''}>urgent · 紧急</option>
+                <option value="low" ${automation?.priority === 'low' ? 'selected' : ''}>low · 低</option>
               </select>
             </div>
             <div class="field">
               <label for="auto-labels">标签</label>
-              <input class="input" id="auto-labels" value="automation,dependencies">
+              <input class="input" id="auto-labels" value="${esc((automation?.labels || ['automation', 'dependencies']).join(','))}">
             </div>
           </div>
           <div class="modal-actions">
             <button class="btn" data-action="close-modal" type="button">取消</button>
-            <button class="btn btn-primary" type="submit">${icon('plus')} 创建自动化</button>
+            <button class="btn btn-primary" type="submit">${icon(editing ? 'check' : 'plus')} ${editing ? '保存修改' : '创建自动化'}</button>
           </div>
         </form>
       </div>
     </div>
   `;
+  const syncSchedule = () => {
+    const type = document.getElementById('auto-type').value;
+    document.querySelectorAll('.auto-interval').forEach((element) => {
+      element.classList.toggle('hidden', type !== 'interval');
+    });
+    document.querySelectorAll('.auto-cron').forEach((element) => {
+      element.classList.toggle('hidden', type !== 'cron');
+    });
+  };
+  document.getElementById('auto-type').addEventListener('change', syncSchedule);
+  syncSchedule();
   document.getElementById('automation-form').addEventListener('submit', async (event) => {
     event.preventDefault();
+    const type = document.getElementById('auto-type').value;
     const payload = {
       name: document.getElementById('auto-name').value,
       title: document.getElementById('auto-title').value,
       body: document.getElementById('auto-body').value,
-      everyMinutes: Number(document.getElementById('auto-every').value),
+      scheduleType: type,
+      everyMinutes: Number(document.getElementById('auto-every').value || 60),
+      cron: document.getElementById('auto-cron').value.trim(),
+      timezone: document.getElementById('auto-timezone').value.trim() || 'UTC',
       acceptance: document.getElementById('auto-acceptance').value,
       priority: document.getElementById('auto-priority').value,
       labels: document.getElementById('auto-labels').value
@@ -1913,10 +2190,13 @@ function openAutomationModal() {
         .filter(Boolean),
     };
     try {
-      await api('/api/automations', { method: 'POST', body: JSON.stringify(payload) });
+      await api(
+        editing ? `/api/automations/${encodeURIComponent(automation.id)}` : '/api/automations',
+        { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(payload) },
+      );
       closeModal();
       await refresh();
-      toast('定时自动化已创建');
+      toast(editing ? '定时自动化已更新' : '定时自动化已创建');
     } catch (error) {
       toast(error.message, 'error');
     }
@@ -1996,6 +2276,25 @@ function openRemoteWorkerModal() {
     }
   });
   setTimeout(() => document.getElementById('rwk-name')?.focus(), 40);
+}
+
+function showWorkerTokenModal(name, token, actionLabel = '新 token') {
+  state.modal = 'worker-token';
+  modalRoot.innerHTML = `
+    <div class="modal-backdrop" data-backdrop="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <div><div class="modal-title" id="modal-title">${esc(name)} · ${esc(actionLabel)}</div><div class="modal-sub">token 只显示这一次，请立即保存。</div></div>
+          <button class="btn btn-ghost btn-icon" data-action="close-modal" type="button" aria-label="关闭">${icon('x')}</button>
+        </div>
+        <div class="code" id="rwk-token" data-copy-id="rwk-token" data-copy="${esc(token)}" style="white-space:pre-wrap">${esc(token)}</div>
+        <div class="modal-actions">
+          <button class="btn" data-action="copy" data-copy-id="rwk-token" data-copy="${esc(token)}" type="button">${icon('copy')} 复制 token</button>
+          <button class="btn btn-primary" data-action="close-modal" type="button">完成</button>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function openProjectModal() {
@@ -2121,8 +2420,38 @@ async function handleAction(action, id) {
       openAutomationModal();
       return;
     }
+    if (action === 'edit-automation') {
+      const automation = (state.data.automations || []).find((item) => item.id === id);
+      if (automation) openAutomationModal(automation);
+      return;
+    }
+    if (action === 'delete-automation') {
+      if (!window.confirm('删除这个定时自动化？已产生的 Inbox 事件和 Ticket 不会删除。')) return;
+      await api(`/api/automations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await refresh();
+      toast('定时自动化已删除', 'warn');
+      return;
+    }
     if (action === 'add-remote-worker') {
       openRemoteWorkerModal();
+      return;
+    }
+    if (action === 'rotate-remote-worker') {
+      if (!window.confirm('轮换后旧 token 立即失效，远程 Worker 需要更新配置。继续？')) return;
+      const result = await api(`/api/workers/${encodeURIComponent(id)}/rotate`, { method: 'POST' });
+      await refresh();
+      showWorkerTokenModal(
+        result.worker?.name || 'remote worker',
+        result.token,
+        '轮换后的 token',
+      );
+      return;
+    }
+    if (action === 'revoke-remote-worker') {
+      if (!window.confirm('吊销这个远程 Worker？当前 Ticket 的 lease 会自然过期。')) return;
+      await api(`/api/workers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await refresh();
+      toast('远程 Worker 已吊销', 'warn');
       return;
     }
     if (action === 'toggle-automation') {
@@ -2222,6 +2551,21 @@ async function handleAction(action, id) {
     if (action === 'filter-inbox' || action === 'filter-outbox' || action === 'filter-tickets') {
       const group = action.replace('filter-', '');
       state.filters[group] = id.filter;
+      render();
+      return;
+    }
+    if (action === 'apply-audit-filter') {
+      const source = document.getElementById('audit-source')?.value?.trim() || '';
+      state.audit = {
+        query: document.getElementById('audit-query')?.value?.trim() || '',
+        source: source || 'all',
+        status: document.getElementById('audit-status')?.value || 'all',
+      };
+      render();
+      return;
+    }
+    if (action === 'reset-audit-filter') {
+      state.audit = { query: '', source: 'all', status: 'all' };
       render();
       return;
     }

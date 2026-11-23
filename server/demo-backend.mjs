@@ -109,6 +109,20 @@ export class DemoBackend {
     return { automation, automations: this.store.state.automations };
   }
 
+  editAutomation(id, patch) {
+    const automation = this.engine.editAutomation(id, patch);
+    return { automation, automations: this.store.state.automations };
+  }
+
+  removeAutomation(id) {
+    const automation = this.engine.removeAutomation(id);
+    return { automation, automations: this.store.state.automations };
+  }
+
+  automationHistory(id) {
+    return this.engine.automationHistory(id);
+  }
+
   runAutomation(id) {
     const result = this.engine.runAutomation(id);
     return { ...result, automations: this.store.state.automations };

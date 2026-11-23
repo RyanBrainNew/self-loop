@@ -1033,6 +1033,50 @@ export class ProjectBackend {
     return { automation, automations: this.snapshot().automations };
   }
 
+  async editAutomation(id, patch) {
+    const result = await this.runRouter([
+      'automations',
+      'edit',
+      '--id',
+      String(id),
+      '--data',
+      JSON.stringify(patch || {}),
+    ]);
+    let automation = null;
+    try {
+      automation = JSON.parse(result.stdout);
+    } catch {}
+    return { automation, automations: this.snapshot().automations };
+  }
+
+  async removeAutomation(id) {
+    const result = await this.runRouter([
+      'automations',
+      'remove',
+      '--id',
+      String(id),
+    ]);
+    let automation = null;
+    try {
+      automation = JSON.parse(result.stdout);
+    } catch {}
+    return { automation, automations: this.snapshot().automations };
+  }
+
+  async automationHistory(id) {
+    const result = await this.runRouter([
+      'automations',
+      'history',
+      '--id',
+      String(id),
+    ]);
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      return { id, runs: [] };
+    }
+  }
+
   async runAutomation(id) {
     const result = await this.runRouter(['automations', 'run', '--id', String(id)]);
     let payload = null;
@@ -1082,6 +1126,30 @@ export class ProjectBackend {
       worker = JSON.parse(result.stdout);
     } catch {}
     return { worker };
+  }
+
+  async rotateRemoteWorker(id) {
+    const result = await this.runRouter(['workers', 'rotate', '--id', String(id)]);
+    let payload = null;
+    try {
+      payload = JSON.parse(result.stdout);
+    } catch {}
+    return {
+      ...payload,
+      remoteWorkers: this.snapshot().remoteWorkers || [],
+    };
+  }
+
+  async revokeRemoteWorker(id) {
+    const result = await this.runRouter(['workers', 'revoke', '--id', String(id)]);
+    let worker = null;
+    try {
+      worker = JSON.parse(result.stdout);
+    } catch {}
+    return {
+      worker,
+      remoteWorkers: this.snapshot().remoteWorkers || [],
+    };
   }
 
   async claimRemoteWorker(token) {

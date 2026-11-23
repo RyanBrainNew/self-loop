@@ -705,6 +705,17 @@ test('Task Card parses explicit acceptance and blocks on ambiguity', () => {
   });
   assert.match(ambiguous.blockedReason, /No concrete/);
   assert.equal(ambiguous.assumptions.length, 1);
+  const external = buildTaskCard({
+    ticket: {
+      number: 3,
+      title: 'connector task',
+      body: 'No markdown checklist here.',
+      acceptance: ['comment addressed', 'reply posted'],
+    },
+    settings,
+  });
+  assert.equal(external.blockedReason, null);
+  assert.deepEqual(external.acceptance, ['comment addressed', 'reply posted']);
 });
 
 test('Router settings resolve CLI, environment, config, and defaults in order', () => {
@@ -1464,6 +1475,36 @@ test('verifyTicket promotes a pass and retries or blocks a failure', () => {
   assert.equal(blocked.status, 'fail');
   assert.equal(retryTicket.state, 'blocked');
   assert.match(retryTicket.humanQuestion, /Retry budget exhausted/);
+});
+
+test('Verifier commandPrefix routes gates through an external runner', () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+  const settings = resolveSettings(repo, {
+    language: 'en',
+    verifierCommands: ['node -e "process.exit(3)"'],
+    verifierCommandPrefix: [process.execPath, '-e', 'process.exit(0)'],
+  }, {});
+  const state = emptyState(settings);
+  const ticket = createTicket({ number: 17, title: 'wrapped' }, settings);
+  ticket.state = 'verifying';
+  ticket.attempts = 1;
+  ticket.branch = 'HEAD';
+  state.tickets['17'] = ticket;
+  const verification = verifyTicket({
+    repoRoot: repo,
+    settings,
+    state,
+    ticket,
+  });
+  assert.equal(verification.status, 'pass');
+  assert.deepEqual(ticket.verification.checks[0].commandPrefix, [
+    process.execPath,
+    '-e',
+    'process.exit(0)',
+  ]);
 });
 
 test('router clean removes a terminal Ticket worktree', () => {

@@ -82,6 +82,7 @@ Outbox 负责把执行结果送回外部系统，例如：
 | --- | --- |
 | Projects | 一个控制面管理哪些仓库，当前切到哪一个 |
 | Overview | 整个 Router 是否健康，积压和失败在哪里 |
+| Observability | 队列、状态分布、连接器/Worker 健康和告警 |
 | Inbox | 事件从哪里来，是否已被消费 |
 | Tickets | 任务当前处于哪个生命周期阶段 |
 | Ticket detail | 每个 Attempt、证据、阻塞问题和投递结果 |
@@ -142,6 +143,7 @@ MVP 中以下能力是真实的：
 - 多仓库注册表、项目切换、添加和移除；
 - Codex / Claude / 自定义 executor adapter，超时、崩溃检测和取消；
 - 真实 Verifier clean worktree、门禁证据和缺失门禁转人工；
+- 可配置 `verifier.commandPrefix`，把门禁交给 Docker/Podman 等外部 runner；
 - 持久化 Outbox，GitHub/Jira/Slack 投递、幂等键、429 退避和死信；
 - demo 模式的 Ticket 生命周期、人工回答、Outbox 重试和死信；
 - Source / Worker 开关和审计记录（demo）；
@@ -154,6 +156,8 @@ MVP 中以下能力是真实的：
 - 真实 Codex executor 端到端验收：tick → Codex → Result Envelope → 独立 Verifier → awaiting_review；
 - 定时自动化、远程 Worker 注册/心跳/claim/complete、通用 Webhook Outbox；
 - Prometheus `/metrics`、`/api/observability`、备份/恢复；
+- Prometheus 告警规则、systemd tick/backup 示例和 GitHub Release 自动化；
+- GitHub PR 评论 `/loop` / `@self-loop` 生成带 PR 链接的 follow-up Ticket；
 - 四套主题和中英文对照界面（Glossary 术语表）。
 
 以下能力目前是模拟的：
@@ -185,6 +189,7 @@ MVP 中以下能力是真实的：
 - [Hosted multi-tenant ADR](adr/0013-hosted-multi-tenant-architecture.md)
 - [Hosted OAuth 说明](HOSTED-OAUTH.md)
 - [Codex E2E 证据](EVIDENCE-CODEX-E2E.md)
+- [Console QA 证据](EVIDENCE-CONSOLE-QA.md)
 - [Optional SQLite store ADR](adr/0014-optional-sqlite-store.md)
 - [Connector ingress ADR](adr/0015-connector-ingress.md)
 - [Automations and remote Workers ADR](adr/0016-automations-and-remote-workers.md)

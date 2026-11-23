@@ -1,0 +1,21 @@
+[Unit]
+Description=self-loop local Router console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=selfloop
+WorkingDirectory=/opt/self-loop
+Environment=SELF_LOOP_REPO=/srv/project
+ExecStart=/usr/bin/node /opt/self-loop/server/index.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/project /home/selfloop/.self-loop
+
+[Install]
+WantedBy=multi-user.target

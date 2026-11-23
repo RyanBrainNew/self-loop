@@ -63,7 +63,10 @@ import {
 } from './sqlite-store.mjs';
 import {
   addAutomation,
+  automationHistory,
+  editAutomation,
   loadAutomations,
+  removeAutomation,
   runAutomation,
   runDueAutomations,
   toggleAutomation,
@@ -74,6 +77,8 @@ import {
   listWorkers,
   markWorker,
   registerWorker,
+  revokeWorker,
+  rotateWorkerToken,
 } from './workers.mjs';
 
 export const ROUTER_STATE_VERSION = 1;
@@ -408,7 +413,9 @@ export function extractAcceptance(body = '') {
 }
 
 export function buildTaskCard({ ticket, settings } = {}) {
-  const acceptance = extractAcceptance(ticket.body);
+  const acceptance = Array.isArray(ticket.acceptance) && ticket.acceptance.length
+    ? ticket.acceptance.map(String).filter(Boolean)
+    : extractAcceptance(ticket.body);
   const commands = discoverVerifierCommands({ repoRoot: ticket.repoRoot || settings.repoRoot, settings });
   const language = settings.language || ticket.language || 'zh-CN';
   return {
@@ -1449,11 +1456,20 @@ export async function claimTicketForWorker({
   return withStateLock(settings, async () => {
     const state = loadState(settings);
     const worker = authenticateWorker(settings, token, now);
-    if (worker.currentTicketId) {
+    const workerTickets = Object.values(state.tickets).filter(
+      (ticket) => ticket.worker?.id === worker.id
+        && ['working', 'verifying'].includes(ticket.state),
+    );
+    if (workerTickets.length >= (worker.concurrency || 1)) {
       return {
         status: 'busy',
-        reason: 'worker already has a claimed ticket',
-        worker: { id: worker.id, name: worker.name, currentTicketId: worker.currentTicketId },
+        reason: 'worker concurrency limit reached',
+        worker: {
+          id: worker.id,
+          name: worker.name,
+          concurrency: worker.concurrency || 1,
+          currentTicketId: worker.currentTicketId,
+        },
       };
     }
     if (runningTickets(state).length >= settings.router.maxConcurrent) {
@@ -1532,7 +1548,15 @@ export async function completeTicketForWorker({
     saveTicket(settings, ticket);
     saveState(settings, state);
     if (envelope.state !== 'progress' && envelope.state !== 'waiting') {
-      markWorker(settings, worker.id, { status: 'online', currentTicketId: null }, now);
+      const remaining = Object.values(state.tickets).filter(
+        (item) => item.number !== ticket.number
+          && item.worker?.id === worker.id
+          && ['working', 'verifying'].includes(item.state),
+      );
+      markWorker(settings, worker.id, {
+        status: remaining.length ? 'busy' : 'online',
+        currentTicketId: remaining[0]?.id || null,
+      }, now);
     }
     return { worker: { id: worker.id, name: worker.name }, ticket };
   });
@@ -1724,6 +1748,25 @@ async function main() {
       console.log(JSON.stringify(automation, null, 2));
       return 0;
     }
+    if (action === 'edit') {
+      if (!values.id) throw new Error('router automations edit requires --id <automation>');
+      const automation = await withStateLock(settings, async () =>
+        editAutomation(settings, values.id, JSON.parse(values.data || '{}')));
+      console.log(JSON.stringify(automation, null, 2));
+      return 0;
+    }
+    if (action === 'remove') {
+      if (!values.id) throw new Error('router automations remove requires --id <automation>');
+      const automation = await withStateLock(settings, async () =>
+        removeAutomation(settings, values.id));
+      console.log(JSON.stringify(automation, null, 2));
+      return 0;
+    }
+    if (action === 'history') {
+      if (!values.id) throw new Error('router automations history requires --id <automation>');
+      console.log(JSON.stringify(automationHistory(settings, values.id), null, 2));
+      return 0;
+    }
     if (action === 'toggle') {
       if (!values.id) throw new Error('router automations toggle requires --id <automation>');
       const automation = await withStateLock(settings, async () =>
@@ -1751,7 +1794,7 @@ async function main() {
       }, null, 2));
       return 0;
     }
-    throw new Error(`unknown router automations action: ${action} (list|add|toggle|run|due)`);
+    throw new Error(`unknown router automations action: ${action} (list|add|edit|remove|history|toggle|run|due)`);
   }
 
   if (sub === 'workers') {
@@ -1779,7 +1822,17 @@ async function main() {
       console.log(JSON.stringify(heartbeatWorker(settings, token, patch), null, 2));
       return 0;
     }
-    throw new Error(`unknown router workers action: ${action} (list|register|heartbeat)`);
+    if (action === 'rotate') {
+      if (!values.id) throw new Error('router workers rotate requires --id <worker>');
+      console.log(JSON.stringify(rotateWorkerToken(settings, values.id), null, 2));
+      return 0;
+    }
+    if (action === 'revoke') {
+      if (!values.id) throw new Error('router workers revoke requires --id <worker>');
+      console.log(JSON.stringify(revokeWorker(settings, values.id), null, 2));
+      return 0;
+    }
+    throw new Error(`unknown router workers action: ${action} (list|register|heartbeat|rotate|revoke)`);
   }
 
   if (sub === 'claim') {

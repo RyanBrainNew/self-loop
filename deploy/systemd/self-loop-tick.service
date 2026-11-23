@@ -1,0 +1,15 @@
+[Unit]
+Description=self-loop Router tick
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=selfloop
+WorkingDirectory=/opt/self-loop
+ExecStart=/usr/bin/node /opt/self-loop/scripts/run.mjs router tick --repo /srv/project
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/project /home/selfloop/.self-loop

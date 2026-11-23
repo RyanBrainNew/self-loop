@@ -142,6 +142,7 @@ inside the same tick.
 {
   "verifier": {
     "commands": ["npm test", "npm run lint"],
+    "commandPrefix": [],
     "timeoutMinutes": 30
   }
 }
@@ -153,6 +154,29 @@ No command means `human_review`, never an automatic pass.
 
 The Verifier runs in a detached clean worktree at the PR head or branch. It
 does not trust the Worker's report.
+
+`commandPrefix` is optional and lets an operator run every gate through a
+container or sandbox wrapper. `${worktree}` is replaced with the real clean
+worktree path, and the configured gate command is appended as the final
+argument:
+
+```json
+{
+  "verifier": {
+    "commands": ["npm test"],
+    "commandPrefix": [
+      "docker", "run", "--rm",
+      "-v", "${worktree}:/workspace",
+      "-w", "/workspace",
+      "node:20", "sh", "-lc"
+    ]
+  }
+}
+```
+
+The prefix is an explicit operator choice, not a security boundary by itself.
+Pin the image digest and network policy if the verifier must be isolated from
+the host.
 
 ## Outbox
 

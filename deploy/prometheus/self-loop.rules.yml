@@ -1,0 +1,56 @@
+groups:
+  - name: self-loop
+    rules:
+      - alert: SelfLoopRouterPaused
+        expr: self_loop_router_up == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "self-loop Router has been paused for 10 minutes"
+          description: "Resume the Router or confirm that the pause is intentional. Paused Routers do not claim queued work."
+
+      - alert: SelfLoopInboxBacklog
+        expr: sum(self_loop_inbox_events{status="pending"}) > 20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "self-loop Inbox backlog is above 20 events"
+          description: "Check the Router tick schedule, connector throughput, and whether the Router is paused."
+
+      - alert: SelfLoopOutboxDead
+        expr: sum(self_loop_outbox_deliveries{state="dead"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "self-loop Outbox has dead deliveries"
+          description: "Inspect credentials, target URLs, and response codes, then retry the delivery from the Outbox page."
+
+      - alert: SelfLoopBlockedTickets
+        expr: sum(self_loop_tickets{state=~"blocked|failed"}) > 5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "self-loop has more than five blocked or failed Tickets"
+          description: "Review blocked Tickets and decide whether to answer, recover, retry, or cancel."
+
+      - alert: SelfLoopNoOnlineWorkers
+        expr: sum(self_loop_workers{status=~"online|busy"}) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "self-loop has no online Workers"
+          description: "Register or recover a local/remote Worker before the queue can make progress."
+
+      - alert: SelfLoopConnectorDegraded
+        expr: sum(self_loop_sources{status="degraded"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "self-loop has a degraded connector"
+          description: "Check signing secrets, API tokens, network access, and the connector health message in Sources."
