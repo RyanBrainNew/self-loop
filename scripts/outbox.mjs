@@ -1,6 +1,6 @@
 // Durable outbound delivery queue. The Router only enqueues here; network
 // calls happen in an explicit `router outbox flush` step.
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -111,6 +111,17 @@ function targetsFor({ settings, ticket }) {
       config: {
         channel: ticket.connector?.channel || adapters.slack.channel || '',
         threadTs,
+      },
+    });
+  }
+  if (adapters.webhook.enabled) {
+    targets.push({
+      channel: 'webhook',
+      target: adapters.webhook.url ? 'configured webhook' : 'webhook',
+      config: {
+        url: adapters.webhook.url,
+        urlEnv: adapters.webhook.urlEnv,
+        secretEnv: adapters.webhook.secretEnv,
       },
     });
   }
@@ -376,10 +387,54 @@ async function slackDelivery(delivery, settings, { fetchImpl, env, signal }) {
   };
 }
 
+async function webhookDelivery(delivery, settings, { fetchImpl, env, signal }) {
+  const config = settings.outbox.adapters.webhook;
+  const url = delivery.config?.url || env[config.urlEnv];
+  if (!url) {
+    throw Object.assign(
+      new Error(`missing webhook URL: set outbox.adapters.webhook.url or ${config.urlEnv}`),
+      { permanent: true },
+    );
+  }
+  const body = JSON.stringify({
+    version: 1,
+    idempotencyKey: delivery.idempotencyKey,
+    ticket: delivery.ticket,
+    ticketNumber: delivery.ticket,
+    ticketTitle: delivery.ticketTitle,
+    state: delivery.ticketState,
+    kind: delivery.kind,
+    text: delivery.body,
+    createdAt: delivery.createdAt,
+  });
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Self-Loop-Idempotency-Key': delivery.idempotencyKey,
+  };
+  const secret = env[config.secretEnv];
+  if (secret) {
+    headers['X-Self-Loop-Signature'] = `sha256=${createHmac('sha256', secret)
+      .update(body)
+      .digest('hex')}`;
+  }
+  const response = await fetchImpl(url, { method: 'POST', headers, body, signal });
+  return {
+    ok: response.ok,
+    status: response.status,
+    statusCode: response.status,
+    body: await responseBody(response),
+    id: response.headers?.get?.('x-request-id') || null,
+    retryAfterMs: retryAfterMs(response),
+    error: response.ok ? null : `HTTP ${response.status}`,
+    requestId: response.headers?.get?.('x-request-id') || null,
+  };
+}
+
 const DELIVERERS = {
   github: githubDelivery,
   jira: jiraDelivery,
   slack: slackDelivery,
+  webhook: webhookDelivery,
 };
 
 export async function deliverOutbox(delivery, settings, {

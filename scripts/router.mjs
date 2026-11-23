@@ -61,6 +61,20 @@ import {
   saveSqliteState,
   saveSqliteTicket,
 } from './sqlite-store.mjs';
+import {
+  addAutomation,
+  loadAutomations,
+  runAutomation,
+  runDueAutomations,
+  toggleAutomation,
+} from './automations.mjs';
+import {
+  authenticateWorker,
+  heartbeatWorker,
+  listWorkers,
+  markWorker,
+  registerWorker,
+} from './workers.mjs';
 
 export const ROUTER_STATE_VERSION = 1;
 export const STATUS_MARKER = '<!-- self-loop:status -->';
@@ -693,8 +707,8 @@ function ensureWorktree({ repoRoot, settings, ticket }) {
   return path;
 }
 
-function executorInvocation(settings, workReference) {
-  return buildExecutorInvocation({ settings, workReference });
+function executorInvocation(settings, workReference, writableDirs = []) {
+  return buildExecutorInvocation({ settings, workReference, writableDirs });
 }
 
 export function prepareDispatch({ repoRoot, settings, state, ticket, now = Date.now() } = {}) {
@@ -790,7 +804,11 @@ export async function executeDispatch({
   dryRun = false,
 } = {}) {
   if (prepared.blocked) return { dispatched: false, status: 'blocked', reason: prepared.taskCard.blockedReason };
-  const invocation = executorInvocation(settings, join(skillRoot, 'references', 'WORK.md'));
+  const invocation = executorInvocation(
+    settings,
+    join(skillRoot, 'references', 'WORK.md'),
+    [join(repoRoot, '.git')],
+  );
   if (dryRun) return { dispatched: false, status: 'dry-run', worktree: prepared.worktree, invocation };
   if (!invocation) {
     ticket.attempts = Math.max(0, (ticket.attempts || 0) - 1);
@@ -810,14 +828,18 @@ export async function executeDispatch({
     const stderr = openSync(stderrPath, 'a');
     let child;
     try {
-      child = spawn(invocation.file, invocation.args, {
-        cwd: prepared.worktree,
-        env,
-        stdio: ['ignore', stdout, stderr],
-        shell: invocation.shell,
-        detached: true,
-        windowsHide: true,
-      });
+      child = spawn(
+        invocation.shell && invocation.command ? invocation.command : invocation.file,
+        invocation.shell && invocation.command ? [] : invocation.args,
+        {
+          cwd: prepared.worktree,
+          env,
+          stdio: ['ignore', stdout, stderr],
+          shell: invocation.shell,
+          detached: true,
+          windowsHide: true,
+        },
+      );
     } catch (error) {
       closeSync(stdout);
       closeSync(stderr);
@@ -860,14 +882,18 @@ export async function executeDispatch({
     return { dispatched: true, status: 'working', background: true, pid: child.pid };
   }
 
-  const result = spawnSync(invocation.file, invocation.args, {
-    cwd: prepared.worktree,
-    env,
-    stdio: 'inherit',
-    shell: invocation.shell,
-    timeout: invocation.timeoutMs,
-    killSignal: 'SIGTERM',
-  });
+  const result = spawnSync(
+    invocation.shell && invocation.command ? invocation.command : invocation.file,
+    invocation.shell && invocation.command ? [] : invocation.args,
+    {
+      cwd: prepared.worktree,
+      env,
+      stdio: 'inherit',
+      shell: invocation.shell,
+      timeout: invocation.timeoutMs,
+      killSignal: 'SIGTERM',
+    },
+  );
   ticket.worker = {
     pid: result.pid || null,
     startedAt: ticket.lease?.startedAt || nowIso(),
@@ -1299,6 +1325,7 @@ export async function tickRouter({
       };
     }
 
+    const automationsRun = runDueAutomations(settings, now);
     const changed = new Map();
     const remember = (ticket) => {
       if (ticket) changed.set(ticket.number, ticket);
@@ -1410,6 +1437,104 @@ export async function tickRouter({
       inbox: inboxSummary(loadInbox(settings)),
       state,
     };
+  });
+}
+
+export async function claimTicketForWorker({
+  repoRoot,
+  settings,
+  token,
+  now = Date.now(),
+} = {}) {
+  return withStateLock(settings, async () => {
+    const state = loadState(settings);
+    const worker = authenticateWorker(settings, token, now);
+    if (worker.currentTicketId) {
+      return {
+        status: 'busy',
+        reason: 'worker already has a claimed ticket',
+        worker: { id: worker.id, name: worker.name, currentTicketId: worker.currentTicketId },
+      };
+    }
+    if (runningTickets(state).length >= settings.router.maxConcurrent) {
+      return { status: 'busy', worker: { id: worker.id, name: worker.name } };
+    }
+    const ticket = Object.values(state.tickets)
+      .filter((item) => item.state === 'queued')
+      .sort((left, right) => Number(left.number) - Number(right.number))[0];
+    if (!ticket) return { status: 'idle', worker: { id: worker.id, name: worker.name } };
+
+    const taskCard = buildTaskCard({ ticket: { ...ticket, repoRoot }, settings });
+    ticket.taskCard = taskCard;
+    if (taskCard.blockedReason) {
+      ticket.state = 'blocked';
+      ticket.humanQuestion = taskCard.blockedReason;
+      ticket.updatedAt = nowIso(now);
+      saveTicket(settings, ticket);
+      saveState(settings, state);
+      return { status: 'blocked', ticket, taskCard, worker: { id: worker.id, name: worker.name } };
+    }
+
+    ticket.attempts = (ticket.attempts || 0) + 1;
+    ticket.state = 'working';
+    ticket.lease = {
+      id: `${ticket.number}-${ticket.attempts}`,
+      startedAt: nowIso(now),
+      expiresAt: new Date(now + settings.router.leaseMinutes * 60_000).toISOString(),
+      pid: null,
+    };
+    ticket.worker = {
+      id: worker.id,
+      name: worker.name,
+      kind: worker.kind,
+      remote: true,
+      startedAt: nowIso(now),
+      heartbeatAt: nowIso(now),
+    };
+    ticket.updatedAt = nowIso(now);
+    const paths = writeTicketContext({ repoRoot, settings, ticket, taskCard });
+    saveTicket(settings, ticket);
+    saveState(settings, state);
+    markWorker(settings, worker.id, { status: 'busy', currentTicketId: ticket.id }, now);
+    return {
+      status: 'claimed',
+      worker: { id: worker.id, name: worker.name, kind: worker.kind },
+      ticket,
+      taskCard,
+      lease: ticket.lease,
+      context: paths,
+    };
+  });
+}
+
+export async function completeTicketForWorker({
+  settings,
+  token,
+  ticket: ticketNumber,
+  result,
+  now = Date.now(),
+} = {}) {
+  return withStateLock(settings, async () => {
+    const state = loadState(settings);
+    const worker = authenticateWorker(settings, token, now);
+    const ticket = state.tickets[String(ticketNumber)];
+    if (!ticket) throw new Error(`unknown ticket: ${ticketNumber}`);
+    if (ticket.worker?.id && ticket.worker.id !== worker.id) {
+      const error = new Error('ticket is leased to another worker');
+      error.statusCode = 403;
+      throw error;
+    }
+    const envelope = validateResultEnvelope(result);
+    if (Number(envelope.ticket) !== Number(ticket.number)) {
+      throw new Error('result.ticket does not match the leased ticket');
+    }
+    applyResultToTicket(ticket, envelope, settings.language);
+    saveTicket(settings, ticket);
+    saveState(settings, state);
+    if (envelope.state !== 'progress' && envelope.state !== 'waiting') {
+      markWorker(settings, worker.id, { status: 'online', currentTicketId: null }, now);
+    }
+    return { worker: { id: worker.id, name: worker.name }, ticket };
   });
 }
 
@@ -1577,6 +1702,108 @@ async function main() {
       summary: inboxSummary(inbox),
       events: selected,
     }, null, 2));
+    return 0;
+  }
+
+  if (sub === 'automations') {
+    const action = rest[1] || 'list';
+    if (action === 'list') {
+      console.log(JSON.stringify(loadAutomations(settings), null, 2));
+      return 0;
+    }
+    if (action === 'add') {
+      const input = values.data ? JSON.parse(values.data) : {
+        name: values.name,
+        title: values.title,
+        body: values.body,
+        everyMinutes: values['every-minutes'],
+        acceptance: values.acceptance,
+      };
+      const automation = await withStateLock(settings, async () =>
+        addAutomation(settings, input));
+      console.log(JSON.stringify(automation, null, 2));
+      return 0;
+    }
+    if (action === 'toggle') {
+      if (!values.id) throw new Error('router automations toggle requires --id <automation>');
+      const automation = await withStateLock(settings, async () =>
+        toggleAutomation(settings, values.id));
+      console.log(JSON.stringify(automation, null, 2));
+      return 0;
+    }
+    if (action === 'run') {
+      if (!values.id) throw new Error('router automations run requires --id <automation>');
+      const result = await withStateLock(settings, async () =>
+        runAutomation(settings, values.id));
+      console.log(JSON.stringify({
+        automation: result.automation,
+        event: result.event,
+        duplicate: result.duplicate,
+      }, null, 2));
+      return 0;
+    }
+    if (action === 'due') {
+      const results = await withStateLock(settings, async () =>
+        runDueAutomations(settings));
+      console.log(JSON.stringify({
+        ran: results.length,
+        events: results.map((item) => ({ automation: item.automation.id, event: item.event.id })),
+      }, null, 2));
+      return 0;
+    }
+    throw new Error(`unknown router automations action: ${action} (list|add|toggle|run|due)`);
+  }
+
+  if (sub === 'workers') {
+    const action = rest[1] || 'list';
+    if (action === 'list') {
+      console.log(JSON.stringify({ workers: listWorkers(settings) }, null, 2));
+      return 0;
+    }
+    if (action === 'register') {
+      const input = values.data ? JSON.parse(values.data) : {
+        name: values.name,
+        kind: values.kind,
+        capabilities: values.capabilities,
+        concurrency: values.concurrency,
+      };
+      console.log(JSON.stringify(registerWorker(settings, input), null, 2));
+      return 0;
+    }
+    if (action === 'heartbeat') {
+      const token = values.token || process.env.SELF_LOOP_WORKER_TOKEN;
+      const patch = values.data ? JSON.parse(values.data) : {
+        status: values.status,
+        currentTicketId: values.ticket,
+      };
+      console.log(JSON.stringify(heartbeatWorker(settings, token, patch), null, 2));
+      return 0;
+    }
+    throw new Error(`unknown router workers action: ${action} (list|register|heartbeat)`);
+  }
+
+  if (sub === 'claim') {
+    const token = values.token || process.env.SELF_LOOP_WORKER_TOKEN;
+    const result = await claimTicketForWorker({ repoRoot, settings, token });
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+
+  if (sub === 'complete') {
+    const token = values.token || process.env.SELF_LOOP_WORKER_TOKEN;
+    if (!values.ticket) throw new Error('router complete requires --ticket <number>');
+    if (!values.file && !values.data) {
+      throw new Error('router complete requires --file <result.json> or --data <json>');
+    }
+    const result = await completeTicketForWorker({
+      settings,
+      token,
+      ticket: Number(values.ticket),
+      result: values.data
+        ? JSON.parse(values.data)
+        : readJson(resolve(values.file), null),
+    });
+    console.log(JSON.stringify(result, null, 2));
     return 0;
   }
 

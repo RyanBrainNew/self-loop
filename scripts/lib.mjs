@@ -228,6 +228,11 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
     && !Array.isArray(outboxAdapters.slack)
     ? outboxAdapters.slack
     : {};
+  const webhookOutbox = outboxAdapters.webhook
+    && typeof outboxAdapters.webhook === 'object'
+    && !Array.isArray(outboxAdapters.webhook)
+    ? outboxAdapters.webhook
+    : {};
   const connectorsConfig = config.connectors
     && typeof config.connectors === 'object'
     && !Array.isArray(config.connectors)
@@ -562,6 +567,17 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
           botTokenEnv: String(slackOutbox.botTokenEnv ?? 'SLACK_BOT_TOKEN'),
           channel: String(slackOutbox.channel ?? ''),
           apiBaseUrl: String(slackOutbox.apiBaseUrl ?? 'https://slack.com/api'),
+        },
+        webhook: {
+          enabled: booleanValue(
+            choose(webhookOutbox.enabled, false),
+            'outbox.adapters.webhook.enabled',
+          ),
+          url: String(webhookOutbox.url ?? ''),
+          urlEnv: String(webhookOutbox.urlEnv ?? 'SELF_LOOP_OUTBOX_WEBHOOK_URL'),
+          secretEnv: String(
+            webhookOutbox.secretEnv ?? 'SELF_LOOP_OUTBOX_WEBHOOK_SECRET',
+          ),
         },
       },
     },

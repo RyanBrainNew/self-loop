@@ -99,7 +99,7 @@ export function detectExecutor({
   if (explicit) return explicit;
   const fromEnv = env.SELF_LOOP_AGENT || env.LOOP_AGENT;
   if (fromEnv) return fromEnv;
-  if (hasCommand('codex')) return ['codex', 'exec', '--full-auto'];
+  if (hasCommand('codex')) return ['codex', 'exec', '-s', 'workspace-write'];
   if (hasCommand('claude')) return ['claude', '-p'];
   return '';
 }

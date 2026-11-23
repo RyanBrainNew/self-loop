@@ -125,7 +125,15 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 | `POST` | `/api/outbox/flush` | send due deliveries |
 | `POST` | `/api/outbox/:id/replay` | requeue a failed/dead delivery |
 | `POST` | `/api/connectors/jira/sync` | run one Jira incremental sync |
-| `GET` | `/api/workers` | worker pool |
+| `GET` | `/api/automations` | scheduled automation definitions |
+| `POST` | `/api/automations` | create an automation |
+| `POST` | `/api/automations/:id/toggle` | enable or pause an automation |
+| `POST` | `/api/automations/:id/run` | run an automation now |
+| `GET` | `/api/workers` | local and remote worker pools |
+| `POST` | `/api/workers/register` | register a remote worker and return its token |
+| `POST` | `/api/remote/heartbeat` | worker-token heartbeat |
+| `POST` | `/api/remote/claim` | worker-token claim of one queued Ticket |
+| `POST` | `/api/remote/complete` | worker-token Result Envelope submission |
 | `POST` | `/api/workers/:id/toggle` | pause/resume a worker (demo only) |
 | `GET` | `/api/sources` | connectors |
 | `POST` | `/api/sources` | add a connector config (demo only) |
@@ -137,6 +145,8 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 | `GET` | `/api/config` | resolved runtime config |
 | `PATCH` | `/api/config` | update runtime config (demo only) |
 | `POST` | `/api/tick` | run one Router tick |
+| `GET` | `/api/observability` | queue and worker health summary |
+| `GET` | `/metrics` | Prometheus text metrics |
 
 ## GitHub webhook
 
@@ -219,6 +229,53 @@ The key/value pairs live at `.loop/connectors/jira.json`. The connector:
   the previous cursor.
 
 Jira status never substitutes for a Router gate or a Verifier result.
+
+## Automations
+
+The Automations page reads `.loop/automations.json`. Project-mode writes call
+`router automations add|toggle|run`, so the Router keeps the same lock and the
+same gate sequence. `router tick` runs any due automation and appends one
+`task` event; the event does not become a Ticket until the normal drain step.
+
+Demo mode keeps an in-memory automation list and a 30-second checker so the UI
+could be exercised without a real repository.
+
+## Remote workers
+
+`POST /api/workers/register` requires the console session/token and returns a
+one-time `sw_...` worker token. The token is stored only as a SHA-256 hash in
+`.loop/workers.json`.
+
+Remote workers call:
+
+```text
+POST /api/remote/heartbeat   Authorization: Bearer sw_...
+POST /api/remote/claim       Authorization: Bearer sw_...
+POST /api/remote/complete    Authorization: Bearer sw_...
+```
+
+`claim` returns the Task Card, Context Packet paths, lease, and Ticket. The
+worker executes on its own machine and submits a Result Envelope. The Router
+applies it; the independent Verifier runs on the next tick. Remote endpoints
+are project-mode only and reject cross-site Origins.
+
+## Observability and backup
+
+- `GET /api/observability` returns queue lengths, worker health, and state
+  counts for dashboards.
+- `GET /metrics` returns Prometheus text metrics with stable zero-valued
+  series for known ticket/delivery states.
+- `npm run backup -- --repo <repo>` writes a timestamped backup with a
+  manifest; `npm run restore -- --repo <repo> --backup <dir> --dry-run`
+  previews a restore. `worktrees/` is excluded and `artifacts/` is opt-in.
+
+## Themes and bilingual UI
+
+The console ships four themes (Graphite, Ocean, Plum, Paper) selectable in the
+top bar and persisted in localStorage. English technical terms carry a Chinese
+short label; the Glossary page (`#/glossary`) gives a plain-language
+explanation for every term. The shell includes a skip link, `main` landmark,
+`aria-current` navigation, and labelled controls.
 
 ## What is real
 

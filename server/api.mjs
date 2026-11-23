@@ -8,6 +8,7 @@ import {
   parseSlackBody,
   verifySlackSignature,
 } from './connectors/slack.mjs';
+import { metricsText, observabilitySummary } from './observability.mjs';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -514,6 +515,40 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     });
   }
 
+  function bearerToken(req) {
+    const raw = String(req.headers.authorization || '');
+    return raw.toLowerCase().startsWith('bearer ') ? raw.slice(7).trim() : '';
+  }
+
+  async function handleRemoteApi(req, res, path) {
+    if (backend.mode !== 'project') {
+      return sendJson(res, 409, { error: 'remote workers are available in project mode only' });
+    }
+    const token = bearerToken(req);
+    if (!token) return sendJson(res, 401, { error: 'worker token is required' });
+    try {
+      if (path === '/api/remote/heartbeat') {
+        const body = await readBody(req);
+        const result = await backend.heartbeatRemoteWorker(token, body);
+        return sendJson(res, 200, result);
+      }
+      if (path === '/api/remote/claim') {
+        const result = await backend.claimRemoteWorker(token);
+        if (result.status === 'claimed') broadcast();
+        return sendJson(res, 200, result);
+      }
+      if (path === '/api/remote/complete') {
+        const body = await readBody(req);
+        const result = await backend.completeRemoteWorker(token, body.ticket, body.result);
+        broadcast();
+        return sendJson(res, 200, result);
+      }
+      return sendJson(res, 404, { error: 'not found' });
+    } catch (error) {
+      return sendJson(res, error.statusCode || 400, { error: error.message });
+    }
+  }
+
   function requireCapability(name, label) {
     if (backend.capabilities[name]) return;
     backend.unsupported(label);
@@ -537,6 +572,10 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     if (!auth.sameOrigin(req)) {
       record(req, null, 'request.rejected', `cross-site ${method} ${path}`, false);
       return sendJson(res, 403, { error: 'cross-site request rejected' });
+    }
+
+    if (path.startsWith('/api/remote/') && method === 'POST') {
+      return handleRemoteApi(req, res, path);
     }
 
     let authorization = null;
@@ -707,6 +746,35 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
       return sendJson(res, 200, { source: redactSource(source) });
     }
 
+    if (path === '/api/automations' && method === 'GET') {
+      return sendJson(res, 200, { automations: publicSnapshot().automations || [] });
+    }
+
+    if (path === '/api/observability' && method === 'GET') {
+      return sendJson(res, 200, observabilitySummary(publicSnapshot()));
+    }
+
+    if (path === '/api/automations' && method === 'POST') {
+      requireCapability('automationWrite', '新增定时自动化');
+      const body = await readBody(req);
+      const result = await backend.addAutomation(body);
+      record(req, authorization, 'automation.created', result.automation?.id || '');
+      broadcast();
+      return sendJson(res, 201, result);
+    }
+
+    const automationAction = path.match(/^\/api\/automations\/([^/]+)\/(toggle|run)$/);
+    if (automationAction && method === 'POST') {
+      requireCapability('automationWrite', '操作定时自动化');
+      const id = decodeURIComponent(automationAction[1]);
+      const result = automationAction[2] === 'run'
+        ? await backend.runAutomation(id)
+        : await backend.toggleAutomation(id);
+      record(req, authorization, `automation.${automationAction[2]}`, id);
+      broadcast();
+      return sendJson(res, 200, result);
+    }
+
     if (path === '/api/events' && method === 'GET') {
       const status = url.searchParams.get('status');
       const limit = parseLimit(url.searchParams.get('limit'));
@@ -827,7 +895,19 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     }
 
     if (path === '/api/workers' && method === 'GET') {
-      return sendJson(res, 200, { workers: publicSnapshot().workers || [] });
+      return sendJson(res, 200, {
+        workers: publicSnapshot().workers || [],
+        remoteWorkers: publicSnapshot().remoteWorkers || [],
+      });
+    }
+
+    if (path === '/api/workers/register' && method === 'POST') {
+      requireCapability('remoteWorkerWrite', '注册远程执行器');
+      const body = await readBody(req);
+      const result = await backend.registerRemoteWorker(body);
+      record(req, authorization, 'worker.registered', result.worker?.id || '');
+      broadcast();
+      return sendJson(res, 201, result);
     }
 
     const workerToggle = path.match(/^\/api\/workers\/([^/]+)\/toggle$/);
@@ -858,6 +938,16 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
         await handleGitHubWebhook(req, res);
       } else if (url.pathname === '/hooks/slack' && req.method === 'POST') {
         await handleSlackWebhook(req, res);
+      } else if (url.pathname === '/metrics' && req.method === 'GET') {
+        if (req.headers.origin && !auth.sameOrigin(req)) {
+          return sendText(res, 403, 'forbidden');
+        }
+        return sendText(
+          res,
+          200,
+          metricsText(backend.snapshot()),
+          'text/plain; version=0.0.4; charset=utf-8',
+        );
       } else if (url.pathname.startsWith('/api/')) {
         await handleApi(req, res, url);
       } else {

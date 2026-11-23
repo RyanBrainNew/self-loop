@@ -1348,3 +1348,103 @@ test('project registry persists the selected project and protects the last entry
     for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
+
+test('automations, metrics, and observability are exposed through the console API', async () => {
+  const context = await httpFixture();
+  try {
+    const created = await fetch(`${context.base}/api/automations`, {
+      method: 'POST',
+      headers: writeHeaders({ token: context.token }),
+      body: JSON.stringify({
+        name: 'API automation',
+        title: 'API scheduled task',
+        body: '## Acceptance\n- [ ] runs',
+        everyMinutes: 30,
+      }),
+    });
+    assert.equal(created.status, 201);
+    const payload = await created.json();
+    const id = payload.automation.id;
+    assert.equal(payload.automations.some((item) => item.id === id), true);
+
+    const toggled = await fetch(`${context.base}/api/automations/${id}/toggle`, {
+      method: 'POST',
+      headers: writeHeaders({ token: context.token }),
+    });
+    assert.equal(toggled.status, 200, await toggled.text());
+    const run = await fetch(`${context.base}/api/automations/${id}/run`, {
+      method: 'POST',
+      headers: writeHeaders({ token: context.token }),
+    });
+    assert.equal(run.status, 200);
+    assert.ok((await run.json()).event.id);
+
+    const observability = await fetch(`${context.base}/api/observability`).then((res) => res.json());
+    assert.equal(typeof observability.queues.inboxPending, 'number');
+    assert.equal(typeof observability.workers.online, 'number');
+    const metrics = await fetch(`${context.base}/metrics`).then((res) => res.text());
+    assert.match(metrics, /self_loop_tickets\{state=/);
+    assert.match(metrics, /self_loop_router_up 1/);
+  } finally {
+    await context.close();
+  }
+});
+
+test('the console shell is bilingual, themeable, and exposes accessibility landmarks', async () => {
+  const context = await httpFixture();
+  try {
+    const html = await fetch(`${context.base}/`).then((res) => res.text());
+    assert.match(html, /<html lang="zh-CN">/);
+    assert.match(html, /class="skip-link"/);
+    const app = await fetch(`${context.base}/app.js`).then((res) => res.text());
+    assert.match(app, /data-theme-select/);
+    assert.match(app, /Glossary/);
+    assert.match(app, /aria-current="page"/);
+    assert.match(app, /id="main-content"/);
+    assert.match(app, /term-zh/);
+  } finally {
+    await context.close();
+  }
+});
+
+test('project mode registers a remote worker and completes a claimed ticket', async () => {
+  const context = await projectFixture();
+  try {
+    const stateFile = join(context.dirs[0], '.loop', 'state.json');
+    const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+    state.tickets['70'].state = 'queued';
+    state.tickets['70'].attempts = 0;
+    state.tickets['70'].humanQuestion = null;
+    writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`);
+
+    const registered = await context.backend.registerRemoteWorker({
+      name: 'remote-codex',
+      kind: 'codex',
+      capabilities: ['node', 'git'],
+    });
+    assert.match(registered.token, /^sw_/);
+    assert.equal((await context.backend.heartbeatRemoteWorker(registered.token, {
+      status: 'online',
+    })).worker.name, 'remote-codex');
+
+    const claimed = await context.backend.claimRemoteWorker(registered.token);
+    assert.equal(claimed.status, 'claimed');
+    assert.equal(claimed.ticket.number, 70);
+    assert.equal(claimed.ticket.state, 'working');
+
+    const completed = await context.backend.completeRemoteWorker(
+      registered.token,
+      70,
+      {
+        ticket: 70,
+        attempt: 1,
+        state: 'ready',
+        humanText: 'remote worker completed the ticket',
+        artifactRefs: [],
+      },
+    );
+    assert.equal(completed.ticket.state, 'verifying');
+  } finally {
+    await context.close();
+  }
+});

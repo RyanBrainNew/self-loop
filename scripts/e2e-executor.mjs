@@ -40,37 +40,59 @@ function makeFixture() {
 
 function adapterAvailable(adapter, command) {
   if (adapter === 'codex') {
-    const status = spawnSync(command || 'codex', ['login', 'status'], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
+    const executable = command || 'codex';
+    const status = spawnSync(
+      process.platform === 'win32' ? `${executable} login status` : executable,
+      process.platform === 'win32' ? [] : ['login', 'status'],
+      {
+        encoding: 'utf8',
+        windowsHide: true,
+        shell: process.platform === 'win32',
+      },
+    );
     return {
       ok: status.status === 0,
       detail: String(status.stdout || status.stderr || '').trim() || 'codex is not logged in',
     };
   }
   if (adapter === 'claude') {
-    const status = spawnSync(command || 'claude', ['--version'], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
+    const executable = command || 'claude';
+    const status = spawnSync(
+      process.platform === 'win32' ? `${executable} --version` : executable,
+      process.platform === 'win32' ? [] : ['--version'],
+      {
+        encoding: 'utf8',
+        windowsHide: true,
+        shell: process.platform === 'win32',
+      },
+    );
     return {
       ok: status.status === 0,
       detail: String(status.stdout || status.stderr || '').trim() || 'claude is not installed',
     };
   }
-  const status = spawnSync(command || '', ['--version'], {
-    encoding: 'utf8',
-    shell: true,
-    windowsHide: true,
-  });
+  const executable = command || '';
+  const status = spawnSync(
+    process.platform === 'win32' ? `${executable} --version` : executable,
+    process.platform === 'win32' ? [] : ['--version'],
+    {
+      encoding: 'utf8',
+      shell: true,
+      windowsHide: true,
+    },
+  );
   return { ok: status.status === 0, detail: String(status.stdout || status.stderr || '').trim() };
 }
 
 async function main(argv = process.argv.slice(2)) {
   const { values, flags } = parseArgs(argv);
   const adapter = String(values.adapter || 'codex');
-  const command = values.command ? String(values.command) : '';
+  const defaultCommand = adapter === 'codex'
+    ? 'codex'
+    : adapter === 'claude'
+      ? 'claude'
+      : '';
+  const command = values.command ? String(values.command) : defaultCommand;
   const availability = adapterAvailable(adapter, command);
   if (!availability.ok) {
     console.error(`[e2e] ${adapter} is unavailable: ${availability.detail}`);

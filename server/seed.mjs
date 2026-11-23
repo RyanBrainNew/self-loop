@@ -212,6 +212,43 @@ export function createDemoState(now = Date.now()) {
     language: 'zh-CN',
   };
 
+  state.automations = [
+    {
+      id: 'aut_deps',
+      name: 'Daily dependency check',
+      title: '检查依赖升级并生成安全报告',
+      body: '扫描 package-lock，列出可升级依赖和安全公告。',
+      acceptance: ['列出高风险依赖', '给出升级建议'],
+      everyMinutes: 1440,
+      schedule: '每天 09:00',
+      priority: 'normal',
+      labels: ['automation', 'dependencies'],
+      enabled: true,
+      createdAt: ago(now, 1200),
+      updatedAt: ago(now, 60),
+      lastRunAt: ago(now, 420),
+      nextRunAt: new Date(now + 6 * 60 * MINUTE).toISOString(),
+      lastEventId: 'evt_auto_1',
+    },
+    {
+      id: 'aut_weekly',
+      name: 'Weekly project digest',
+      title: '生成项目周报',
+      body: '汇总本周合并的 PR、失败的投递和阻塞任务。',
+      acceptance: ['包含本周合并 PR', '包含阻塞任务'],
+      everyMinutes: 10080,
+      schedule: '每周一 10:00',
+      priority: 'low',
+      labels: ['automation', 'report'],
+      enabled: false,
+      createdAt: ago(now, 2400),
+      updatedAt: ago(now, 180),
+      lastRunAt: null,
+      nextRunAt: null,
+      lastEventId: null,
+    },
+  ];
+
   state.sources = [
     {
       id: 'src_github',

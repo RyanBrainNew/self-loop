@@ -51,6 +51,7 @@ export function emptyState(now = Date.now()) {
     attempts: [],
     deliveries: [],
     workers: [],
+    automations: [],
     audit: [],
   };
 }

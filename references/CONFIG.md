@@ -24,7 +24,7 @@ Setup usually writes a small version of this:
   "githubRepo": "owner/name",
   "language": "zh-CN",
   "executor": {
-    "command": ["codex", "exec", "--full-auto"]
+    "command": ["codex", "exec", "-s", "workspace-write"]
   },
   "verifier": {
     "commands": ["npm test", "npm run lint"]
@@ -84,7 +84,7 @@ The older explicit form remains valid and takes precedence:
 ```json
 {
   "executor": {
-    "command": ["codex", "exec", "--full-auto"],
+    "command": ["codex", "exec", "-s", "workspace-write"],
     "args": []
   }
 }
@@ -180,6 +180,11 @@ does not trust the Worker's report.
         "channel": "#engineering",
         "botTokenEnv": "SLACK_BOT_TOKEN",
         "webhookUrlEnv": "SLACK_WEBHOOK_URL"
+      },
+      "webhook": {
+        "enabled": true,
+        "urlEnv": "SELF_LOOP_OUTBOX_WEBHOOK_URL",
+        "secretEnv": "SELF_LOOP_OUTBOX_WEBHOOK_SECRET"
       }
     }
   }
@@ -190,7 +195,9 @@ does not trust the Worker's report.
 also enabled. Router tick persists deliveries to `.loop/outbox.json`; it never
 calls the network. Run `router outbox flush` from cron or the console to send.
 GitHub requires a token; Jira uses Basic auth with `email` plus token; Slack uses
-a bot token with `channel`, or an incoming webhook URL.
+a bot token with `channel`, or an incoming webhook URL. The generic `webhook`
+adapter POSTs a JSON body with an `X-Self-Loop-Idempotency-Key` header and, when
+the secret is set, an HMAC-SHA256 `X-Self-Loop-Signature`.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -199,6 +206,51 @@ a bot token with `channel`, or an incoming webhook URL.
 | `outbox.maxDelayMs` | `60000` | Retry cap; 429 `Retry-After` is honoured |
 | `outbox.requestTimeoutMs` | `20000` | Per-request network timeout |
 | `outbox.notifyOn` | Review/Blocked/Failed/Done | Ticket states that enqueue a status delivery |
+
+## Automations
+
+Automation definitions live in `.loop/automations.json` and are managed through
+the Router:
+
+```bash
+node scripts/run.mjs router automations list --repo /path/to/project
+node scripts/run.mjs router automations add --repo /path/to/project --data '{"name":"daily","title":"check deps","everyMinutes":1440}'
+node scripts/run.mjs router automations toggle --repo /path/to/project --id aut_xxx
+node scripts/run.mjs router automations run --repo /path/to/project --id aut_xxx
+```
+
+Each due automation appends one `task` Inbox event, then the Router applies its
+normal Task Card, acceptance, lease, and Verifier gates. `router tick` runs due
+automations, so a normal Router cron/daemon is enough.
+
+## Remote workers
+
+Remote worker registrations live in `.loop/workers.json`. The token is returned
+once and stored only as a SHA-256 hash:
+
+```bash
+node scripts/run.mjs router workers register --repo /path/to/project --data '{"name":"box-1","kind":"codex","capabilities":["node","git"]}'
+SELF_LOOP_WORKER_TOKEN=sw_... node scripts/run.mjs router claim --repo /path/to/project
+SELF_LOOP_WORKER_TOKEN=sw_... node scripts/run.mjs router workers heartbeat --repo /path/to/project --data '{"status":"online"}'
+SELF_LOOP_WORKER_TOKEN=sw_... node scripts/run.mjs router complete --repo /path/to/project --ticket 42 --file result.json
+```
+
+HTTP equivalents are `POST /api/remote/heartbeat`, `/api/remote/claim`, and
+`/api/remote/complete` with `Authorization: Bearer <worker-token>`. They are
+project-mode only.
+
+## Backup and restore
+
+```bash
+npm run backup -- --repo /path/to/project
+npm run backup -- --repo /path/to/project --include-artifacts
+npm run restore -- --repo /path/to/project --backup /path/to/backup --dry-run
+npm run restore -- --repo /path/to/project --backup /path/to/backup --force
+```
+
+Backups include `.self-loop.json`, Router state, Tickets, inbox, outbox, SQLite
+DB, connector cursors, automations, and workers. `worktrees/` is excluded by
+default; `artifacts/` is excluded unless `--include-artifacts` is set.
 
 ## Connectors
 

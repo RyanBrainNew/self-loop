@@ -1,6 +1,6 @@
 {
   "name": "self-loop",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Project-agnostic issue and retrospective loop skill",
   "license": "Apache-2.0",
@@ -18,6 +18,9 @@
     "rotate-token": "node server/index.mjs --rotate-token",
     "setup": "node scripts/setup-project.mjs",
     "init-memory": "node scripts/init-memory.mjs",
-    "migrate:sqlite": "node scripts/migrate-store.mjs"
+    "migrate:sqlite": "node scripts/migrate-store.mjs",
+    "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/backup.mjs --restore",
+    "release:check": "node scripts/release-check.mjs"
   }
 }

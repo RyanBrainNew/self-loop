@@ -14,7 +14,7 @@ import { RouterEngine } from './router.mjs';
 import { createDemoState } from './seed.mjs';
 import { Store } from './store.mjs';
 
-const VERSION = '0.2.0';
+const VERSION = '0.4.0';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(here, 'public');
 
@@ -114,6 +114,7 @@ if (options.rotateToken) {
 let backend;
 let timer;
 let connectorTimer;
+let automationTimer;
 let dataFile = null;
 let projectStore = null;
 
@@ -182,6 +183,17 @@ if (registeredProjects.length) {
       jiraRunning = false;
     }
   }, 15_000);
+
+  automationTimer = setInterval(async () => {
+    for (const entry of registry.entries) {
+      try {
+        const result = await backend.runDueAutomations(entry);
+        if (result.ran) api.broadcast();
+      } catch (error) {
+        console.error(`[automation] ${entry.name}: ${error.message}`);
+      }
+    }
+  }, 30_000);
 } else {
   if (options.repos.length) throw new Error('no project was registered');
   dataFile = resolve(process.cwd(), options.data);
@@ -208,6 +220,21 @@ if (registeredProjects.length) {
       console.error('[tick]', error);
     }
   }, 250);
+
+  automationTimer = setInterval(() => {
+    if (backend.mode !== 'demo') return;
+    const now = Date.now();
+    for (const automation of backend.store.state.automations || []) {
+      if (!automation.enabled) continue;
+      if (Date.parse(automation.nextRunAt || 0) > now) continue;
+      try {
+        backend.runAutomation(automation.id);
+        api.broadcast();
+      } catch (error) {
+        console.error('[automation]', error.message);
+      }
+    }
+  }, 30_000);
 }
 
 const audit = new ConsoleAudit(options.auditFile);
@@ -257,6 +284,7 @@ server.listen(options.port, options.host, () => {
 function shutdown() {
   clearInterval(timer);
   clearInterval(connectorTimer);
+  clearInterval(automationTimer);
   try {
     if (backend.mode === 'demo') backend.store.save();
   } catch (error) {

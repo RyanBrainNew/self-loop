@@ -62,6 +62,11 @@ npm run serve
 会话写操作，CLI 使用 `Authorization: Bearer <token>`。所有写接口校验 Origin，
 跨站读写和 SSE 都会被拒绝。不要在没有认证反向代理的情况下暴露到公网。
 
+控制台默认提供中英文对照：所有英文技术词都带中文短注，`Glossary / 术语表`
+页面给出完整解释；非研发同学可以从总览直接看懂 Source → Inbox → Router →
+Worker → Verifier → Outbox。内置 `Graphite / 石墨`、`Ocean / 深海`、
+`Plum / 梅子`、`Paper / 纸张` 四套主题，右上角可切换并记住选择。
+
 连接器配置、事件注入、Ticket 生命周期、真实 Verifier 证据和 Outbox 投递都是
 真实的；GitHub / Slack webhook 原始报文验签、delivery 去重、Slack `/loop`
 和 thread 回写已经接入。Jira 按 `updated` 做增量轮询，cursor 持久化在
@@ -79,15 +84,32 @@ npm run migrate:sqlite -- --repo /path/to/project --dry-run
 npm run migrate:sqlite -- --repo /path/to/project
 ```
 
-真实 Codex/Claude 端到端验收入口：
+真实 executor 端到端验收入口（Codex 已在本机跑通，Claude 需要安装并登录）：
 
 ```bash
 npm run test:e2e:codex
 ```
 
+发布前检查与运维：
+
+```bash
+npm run release:check
+npm run backup -- --repo /path/to/project
+npm run restore -- --repo /path/to/project --backup /path/to/backup --dry-run
+```
+
 该命令会创建临时仓库、运行真实 executor、检查 Result Envelope 与独立
 Verifier；需要先登录对应 CLI。详见 `server/README.md`、
 `references/CONFIG.md`、`references/ROUTER.md` 和 ADR 0010–0015。
+本机 Codex 的真实运行证据见
+[`docs/EVIDENCE-CODEX-E2E.md`](docs/EVIDENCE-CODEX-E2E.md)。
+托管版的 Slack/Jira OAuth 与本机凭据的区别见
+[`docs/HOSTED-OAUTH.md`](docs/HOSTED-OAUTH.md)。
+
+运维能力：`router automations` 管理定时自动化；`router workers` +
+`router claim/complete` 接入远程执行器；`GET /metrics` 与
+`GET /api/observability` 暴露队列和 Worker 指标；`npm run backup` /
+`npm run restore` 提供带 manifest 的备份恢复。通用 Webhook Outbox 也已支持。
 
 ## 官网
 
@@ -287,7 +309,7 @@ node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET_REPO" \
 `router tick` 在空闲时选择并领取 Issue（默认一条，`maxConcurrent` 可调），生成 Task Card 和 Context Packet，交给配置的 executor；Worker 交付后由独立 Verifier 复跑门禁。也可以继续使用无 Router 的旧式流水线：
 
 ```bash
-SELF_LOOP_AGENT='codex exec --full-auto' \
+SELF_LOOP_AGENT='codex exec -s workspace-write' \
   node "$SKILL_DIR/scripts/run.mjs" agent --repo "$TARGET_REPO"
 ```
 
