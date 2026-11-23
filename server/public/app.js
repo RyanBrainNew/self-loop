@@ -162,7 +162,8 @@ function duration(start, end) {
   if (!Number.isFinite(ms) || ms < 0) return '—';
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+  const totalSeconds = Math.round(ms / 1000);
+  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
 function stageClass(value) {
@@ -266,6 +267,10 @@ function shell() {
   const data = state.data;
   const counts = computeCounts(data);
   const route = state.route;
+  const caps = data.capabilities || {};
+  const projects = data.projects || { currentId: null, items: [] };
+  const canSwitch = Boolean(caps.projectSelect && projects.items.length > 1);
+  const project = data.config.project || { name: 'self-loop', repo: '' };
   return `
     <div class="shell">
       <aside class="sidebar">
@@ -279,10 +284,20 @@ function shell() {
         <div class="project">
           <div>
             <div class="project-label">Project</div>
-            <div class="project-name">${esc(data.config.project.name)}</div>
-            <div class="project-repo">${esc(data.config.project.repo)}</div>
+            ${
+              canSwitch
+                ? `<select class="project-select" data-project-select aria-label="选择项目">
+                    ${projects.items
+                      .map(
+                        (item) => `<option value="${esc(item.id)}" ${item.current ? 'selected' : ''}>${esc(item.name)}</option>`,
+                      )
+                      .join('')}
+                  </select>`
+                : `<div class="project-name">${esc(project.name)}</div>`
+            }
+            <div class="project-repo">${esc(project.repo || 'local project')}</div>
           </div>
-          <span class="badge badge-green">local</span>
+          <span class="badge ${caps.mode === 'project' ? 'badge-cyan' : 'badge-green'}">${caps.mode === 'project' ? 'project' : 'demo'}</span>
         </div>
         <nav class="nav" aria-label="主导航">
           <div class="nav-section">Control plane</div>
@@ -303,13 +318,13 @@ function shell() {
               <span class="nav-count" style="margin-left:auto">${data.meta.tickCount || 0}</span>
             </div>
             <div class="status-meta">
-              tick ${data.config.tickMs}ms · ${data.config.maxConcurrent} slots<br>
+              ${caps.mode === 'project' ? 'reads .loop/state.json' : `tick ${data.config.tickMs}ms`} · ${data.config.maxConcurrent} slots<br>
               ${data.meta.lastTickAt ? `last ${timeAgo(data.meta.lastTickAt)}` : 'not started'}
             </div>
           </div>
           <div class="local-badge">
             ${icon('shield')}
-            <span>LOCAL · NO AUTH<br>不要暴露到公网</span>
+            <span>LOCAL · TOKEN<br>写操作已保护 · 不要暴露到公网</span>
           </div>
         </div>
       </aside>
@@ -325,11 +340,9 @@ function shell() {
             <span class="badge badge-muted">${data.config.maxConcurrent} slots</span>
             <span class="badge badge-muted">${fmtTime(data.meta.lastTickAt)}</span>
           </div>
-          <button class="btn btn-ghost btn-sm" data-action="toggle-pause" type="button">
-            ${icon(data.meta.paused ? 'play' : 'pause')} ${data.meta.paused ? 'Resume' : 'Pause'}
-          </button>
-          <button class="btn btn-sm" data-action="tick" type="button">${icon('refresh')} Tick</button>
-          <button class="btn btn-primary btn-sm" data-action="inject-event" type="button">${icon('plus')} Inject event</button>
+          ${caps.pause ? `<button class="btn btn-ghost btn-sm" data-action="toggle-pause" type="button">${icon(data.meta.paused ? 'play' : 'pause')} ${data.meta.paused ? 'Resume' : 'Pause'}</button>` : ''}
+          <button class="btn btn-sm" data-action="tick" type="button">${icon('refresh')} ${caps.mode === 'project' ? 'Run tick' : 'Tick'}</button>
+          ${caps.injectEvent ? `<button class="btn btn-primary btn-sm" data-action="inject-event" type="button">${icon('plus')} Inject event</button>` : ''}
         </header>
         <main class="content">${view()}</main>
       </div>
@@ -472,6 +485,7 @@ function focusList(blocked, active) {
 
 function overviewView() {
   const data = state.data;
+  const caps = data.capabilities || {};
   const counts = computeCounts(data);
   const blocked = data.tickets.filter((ticket) => ['blocked', 'failed'].includes(ticket.state));
   const active = data.tickets.filter((ticket) => isOpen(ticket.state));
@@ -483,9 +497,23 @@ function overviewView() {
       </div>
       <div class="page-actions">
         <button class="btn" data-action="refresh" type="button">${icon('refresh')} 刷新</button>
-        <button class="btn btn-primary" data-action="inject-event" type="button">${icon('plus')} 注入事件</button>
+        ${caps.injectEvent ? `<button class="btn btn-primary" data-action="inject-event" type="button">${icon('plus')} 注入事件</button>` : ''}
       </div>
     </div>
+    ${
+      caps.mode === 'project'
+        ? `<div class="mode-banner">
+            ${icon('database')}
+            <div>
+              <div class="mode-banner-title">正在读取项目真实 Router 状态</div>
+              <div class="mode-banner-sub">
+                ${esc(data.config.project.repo || data.config.project.name)} · ${esc(data.health?.stateFile || '.loop/state.json')}；
+                Router 仍是 Ticket 状态唯一写入者，控制台写操作通过 router CLI 执行。
+              </div>
+            </div>
+          </div>`
+        : ''
+    }
     ${flowStrip(data)}
     <div class="kpi-grid">
       ${kpi('Inbox pending', counts.pendingEvents, `${counts.sources} sources connected`, 'var(--amber)', 'inbox')}
@@ -548,6 +576,7 @@ function filterChips(group, options) {
 
 function inboxView() {
   const data = state.data;
+  const caps = data.capabilities || {};
   const filter = state.filters.inbox;
   const events = data.events
     .filter((event) => filter === 'all' || event.status === filter)
@@ -559,7 +588,7 @@ function inboxView() {
         <p class="page-sub">事件流，不是任务列表。Router 消费事件后才会生成 Ticket。</p>
       </div>
       <div class="page-actions">
-        <button class="btn btn-primary" data-action="inject-event" type="button">${icon('plus')} 注入事件</button>
+        ${caps.injectEvent ? `<button class="btn btn-primary" data-action="inject-event" type="button">${icon('plus')} 注入事件</button>` : ''}
       </div>
     </div>
     <section class="card">
@@ -594,6 +623,7 @@ function inboxView() {
         <span class="badge badge-green">consumed</span> 已关联到 Ticket；
         <span class="badge badge-muted">ignored</span> 只作为上下文或唤醒信号。
         Inbox 不保存历史执行，Attempt 在 Ticket 详情里。
+        ${caps.mode === 'project' ? ' 当前是项目模式，事件直接来自 .loop/inbox.json。' : ''}
       </p>
     </div>
   `;
@@ -663,7 +693,7 @@ function ticketCard(ticket) {
       ${ticket.workerName ? `<span class="badge badge-muted">${esc(ticket.workerName)}</span>` : '<span class="badge badge-muted">unassigned</span>'}
       <span class="badge badge-muted">A${attemptValue}/${ticket.maxAttempts}</span>
       ${ticket.humanQuestion ? '<span class="badge badge-amber">needs answer</span>' : ''}
-      ${ticket.lastError ? '<span class="badge badge-red">gate failed</span>' : ''}
+      ${['blocked', 'failed'].includes(ticket.state) && ticket.lastError ? '<span class="badge badge-red">gate failed</span>' : ''}
       <span class="dim" style="margin-left:auto;font-size:9.5px">${timeAgo(ticket.updatedAt)}</span>
     </div>
   </button>`;
@@ -725,6 +755,7 @@ function buildTimeline(ticket, event, attempts, audit) {
 
 function ticketView(id) {
   const data = state.data;
+  const caps = data.capabilities || {};
   const ticket = data.tickets.find(
     (candidate) => candidate.id === id || String(candidate.number) === String(id),
   );
@@ -743,6 +774,7 @@ function ticketView(id) {
   const audit = data.audit.filter(
     (entry) => entry.ticketId === ticket.id || entry.entityId === ticket.id,
   );
+  const attemptValue = Number(ticket.attempts || 0) + (ticket.currentAttemptId ? 1 : 0);
   const timeline = buildTimeline(ticket, event, attempts, audit);
   const running = data.tickets.filter((candidate) =>
     ['claimed', 'working', 'verifying'].includes(candidate.state),
@@ -789,16 +821,16 @@ function ticketView(id) {
         <p class="page-sub">${esc(ticket.summary)}</p>
       </div>
       <div class="detail-actions">
-        ${ticket.state === 'blocked' ? `<button class="btn btn-primary" data-action="focus-answer" data-id="${ticket.id}" type="button">${icon('message')} 回答</button>` : ''}
-        ${['blocked', 'failed'].includes(ticket.state) ? `<button class="btn" data-action="retry" data-id="${ticket.id}" type="button">${icon('refresh')} 重跑</button>` : ''}
-        ${ticket.state === 'awaiting_review' ? `<button class="btn btn-primary" data-action="approve" data-id="${ticket.id}" type="button">${icon('check')} 验收通过</button>` : ''}
-        ${!['done', 'dropped'].includes(ticket.state) ? `<button class="btn btn-danger" data-action="cancel" data-id="${ticket.id}" type="button">${icon('x')} 取消</button>` : ''}
+        ${ticket.state === 'blocked' && caps.ticketAnswer ? `<button class="btn btn-primary" data-action="focus-answer" data-id="${ticket.id}" type="button">${icon('message')} 回答</button>` : ''}
+        ${['blocked', 'failed'].includes(ticket.state) && caps.ticketRetry ? `<button class="btn" data-action="retry" data-id="${ticket.id}" type="button">${icon('refresh')} 重跑</button>` : ''}
+        ${ticket.state === 'awaiting_review' && caps.ticketApprove ? `<button class="btn btn-primary" data-action="approve" data-id="${ticket.id}" type="button">${icon('check')} 验收通过</button>` : ''}
+        ${!['done', 'dropped'].includes(ticket.state) && caps.ticketCancel ? `<button class="btn btn-danger" data-action="cancel" data-id="${ticket.id}" type="button">${icon('x')} 取消</button>` : ''}
       </div>
     </div>
     <div class="meta-grid">
       <div class="meta-box"><div class="meta-label">Source</div><div class="meta-value">${esc(ticket.sourceName)}</div><div class="meta-label" style="margin-top:4px">${esc(ticket.externalId)}</div></div>
       <div class="meta-box"><div class="meta-label">Worker</div><div class="meta-value">${esc(ticket.workerName || worker?.name || 'unassigned')}</div><div class="meta-label" style="margin-top:4px">${ticket.lease ? `lease ${timeUntil(ticket.lease.expiresAt)}` : 'no lease'}</div></div>
-      <div class="meta-box"><div class="meta-label">Attempts</div><div class="meta-value">${Number(ticket.attempts || 0) + (ticket.currentAttemptId ? 1 : 0)}/${ticket.maxAttempts}</div><div class="meta-label" style="margin-top:4px">${ticket.lastError ? 'last attempt failed' : 'budget remaining'}</div></div>
+      <div class="meta-box"><div class="meta-label">Attempts</div><div class="meta-value">${attemptValue}/${ticket.maxAttempts}</div><div class="meta-label" style="margin-top:4px">${ticket.lastError ? 'last attempt failed' : attemptValue >= ticket.maxAttempts ? 'no retries left' : 'budget remaining'}</div></div>
       <div class="meta-box"><div class="meta-label">PR</div><div class="meta-value">${ticket.pr ? `#${ticket.pr.number}` : '—'}</div><div class="meta-label" style="margin-top:4px">${ticket.pr ? 'awaiting human review' : 'not opened'}</div></div>
     </div>
     <div class="detail-grid">
@@ -848,7 +880,7 @@ function ticketView(id) {
       </div>
       <div class="stack">
         ${
-          ticket.state === 'blocked'
+          ticket.state === 'blocked' && caps.ticketAnswer
             ? `<div class="question-box">
                 <div class="question-label">${icon('alert')} 需要人工回答</div>
                 <div class="question-text">${esc(ticket.humanQuestion || '请补充继续执行所需的信息。')}</div>
@@ -857,6 +889,16 @@ function ticketView(id) {
                   <button class="btn btn-primary btn-sm" data-action="submit-answer" data-id="${ticket.id}" type="button">提交回答并重新排队</button>
                 </div>
               </div>`
+            : ticket.state === 'blocked'
+              ? `<div class="question-box">
+                  <div class="question-label">${icon('alert')} 需要人工处理</div>
+                  <div class="question-text">${esc(ticket.humanQuestion || 'Router 需要人工决策。')}</div>
+                  <div class="card-sub" style="margin-top:10px;line-height:1.65">
+                    项目模式下回答应写回 Issue，并由 Router 重新读取；控制台只提供
+                    <span class="mono">router recover</span>。在仓库中运行
+                    <span class="mono">node scripts/router.mjs recover --ticket ${ticket.number} --repo .</span>。
+                  </div>
+                </div>`
             : ticket.humanAnswer
               ? `<div class="card" style="border-color:rgba(34,197,94,.3)"><div class="card-title">人工回答</div><div class="code" style="margin-top:8px">${esc(ticket.humanAnswer)}</div></div>`
               : ''
@@ -944,6 +986,7 @@ function attemptBlock(attempt) {
 
 function outboxView() {
   const data = state.data;
+  const caps = data.capabilities || {};
   const filter = state.filters.outbox;
   const deliveries = data.deliveries
     .filter((delivery) => filter === 'all' || delivery.state === filter)
@@ -958,6 +1001,20 @@ function outboxView() {
         ${filterChips('outbox', [['all', 'All'], ['pending', 'Pending'], ['sent', 'Sent'], ['failed', 'Failed'], ['dead', 'Dead']])}
       </div>
     </div>
+    ${
+      !caps.outbox
+        ? `<div class="mode-banner">
+            ${icon('outbox')}
+            <div>
+              <div class="mode-banner-title">项目模式暂不持久化 Outbox 历史</div>
+              <div class="mode-banner-sub">
+                当前 Router 把状态写回 GitHub Issue 评论，但没有单独的投递队列表。
+                控制台不会伪造 sent/failed 记录；Outbox 持久化是后续 Issue。
+              </div>
+            </div>
+          </div>`
+        : ''
+    }
     <div class="kpi-grid kpi-grid-4">
       ${kpi('Delivered', data.deliveries.filter((d) => d.state === 'sent').length, '已送达', 'var(--green)', 'check')}
       ${kpi('Pending', data.deliveries.filter((d) => d.state === 'pending').length, '等待投递', 'var(--amber)', 'clock')}
@@ -981,7 +1038,7 @@ function outboxView() {
                   <td>${deliveryBadge(delivery.state)}</td>
                   <td class="mono">${delivery.attempts}/${delivery.maxAttempts}</td>
                   <td class="dim" style="max-width:220px">${esc(delivery.lastError || '—')}</td>
-                  <td>${['failed', 'dead'].includes(delivery.state) ? `<button class="btn btn-sm" data-action="replay-delivery" data-id="${delivery.id}" type="button">${icon('refresh')} 重投</button>` : ''}</td>
+                  <td>${caps.outbox && ['failed', 'dead'].includes(delivery.state) ? `<button class="btn btn-sm" data-action="replay-delivery" data-id="${delivery.id}" type="button">${icon('refresh')} 重投</button>` : ''}</td>
                 </tr>`,
               )
               .join('') || '<tr><td colspan="9" class="dim">没有匹配的投递</td></tr>'}
@@ -994,6 +1051,7 @@ function outboxView() {
 
 function sourcesView() {
   const data = state.data;
+  const caps = data.capabilities || {};
   return `
     <div class="page-head">
       <div>
@@ -1001,7 +1059,7 @@ function sourcesView() {
         <p class="page-sub">连接器把外部事件归一化后写入 Inbox。Router 不直接读 Jira 或 GitHub。</p>
       </div>
       <div class="page-actions">
-        <button class="btn btn-primary" data-action="add-source" type="button">${icon('plus')} 添加连接器</button>
+        ${caps.sourceWrite ? `<button class="btn btn-primary" data-action="add-source" type="button">${icon('plus')} 添加连接器</button>` : ''}
       </div>
     </div>
     <div class="source-grid">
@@ -1024,7 +1082,7 @@ function sourcesView() {
               <div><div class="meta-label">Auth</div><div class="meta-value">${esc(source.config?.auth || 'connector')}</div></div>
             </div>
             <div class="source-actions">
-              <button class="btn btn-sm" data-action="toggle-source" data-id="${source.id}" type="button">${icon(source.status === 'paused' ? 'play' : 'pause')} ${source.status === 'paused' ? '恢复' : '暂停'}</button>
+              ${caps.sourceWrite ? `<button class="btn btn-sm" data-action="toggle-source" data-id="${source.id}" type="button">${icon(source.status === 'paused' ? 'play' : 'pause')} ${source.status === 'paused' ? '恢复' : '暂停'}</button>` : ''}
               <span class="dim" style="font-size:10px">created ${fmtDate(source.createdAt)}</span>
             </div>
           </article>`,
@@ -1034,8 +1092,11 @@ function sourcesView() {
     <div class="card" style="margin-top:14px;border-color:rgba(245,158,11,.25);background:rgba(245,158,11,.05)">
       <div class="card-title">MVP 边界</div>
       <p class="card-sub" style="font-size:11.5px;line-height:1.65;margin:6px 0 0">
-        这一版把连接器、Inbox、Router、Worker、Verifier、Outbox 串起来。OAuth、真实 webhook 验签、外部 API 限流还没接。
-        先用「注入事件」验证信息架构，再接真实来源。
+        ${
+          caps.mode === 'project'
+            ? '项目模式从真实 .loop 状态推导 Source。连接器配置仍由项目 .self-loop.json 和 Router CLI 管理，控制台只读。'
+            : '这一版把连接器、Inbox、Router、Worker、Verifier、Outbox 串起来。GitHub webhook 验签已接入；Jira / Slack OAuth、外部 API 限流和出站写回还没接。'
+        }
       </p>
     </div>
   `;
@@ -1043,6 +1104,7 @@ function sourcesView() {
 
 function workersView() {
   const data = state.data;
+  const caps = data.capabilities || {};
   return `
     <div class="page-head">
       <div>
@@ -1068,7 +1130,7 @@ function workersView() {
               <div><div class="meta-label">Capabilities</div><div class="meta-value">${esc((worker.capabilities || []).join(', ') || '—')}</div></div>
             </div>
             <div class="worker-actions">
-              <button class="btn btn-sm" data-action="toggle-worker" data-id="${worker.id}" type="button">${icon(worker.paused ? 'play' : 'pause')} ${worker.paused ? '恢复接单' : '暂停接单'}</button>
+              ${caps.workerWrite ? `<button class="btn btn-sm" data-action="toggle-worker" data-id="${worker.id}" type="button">${icon(worker.paused ? 'play' : 'pause')} ${worker.paused ? '恢复接单' : '暂停接单'}</button>` : '<span class="dim" style="font-size:10px">由 Router 调度 · 只读</span>'}
             </div>
           </article>`,
         )
@@ -1091,7 +1153,9 @@ function workersView() {
 
 function policyView() {
   const data = state.data;
+  const caps = data.capabilities || {};
   const config = data.config;
+  const readOnly = caps.configWrite ? '' : 'disabled';
   return `
     <div class="page-head">
       <div>
@@ -1099,23 +1163,27 @@ function policyView() {
         <p class="page-sub">确定性控制面。LLM 可以建议，但不能授权、不能绕过门禁。</p>
       </div>
       <div class="page-actions">
-        <button class="btn" data-action="toggle-pause" type="button">${icon(data.meta.paused ? 'play' : 'pause')} ${data.meta.paused ? '恢复 Router' : '暂停 Router'}</button>
+        ${caps.pause ? `<button class="btn" data-action="toggle-pause" type="button">${icon(data.meta.paused ? 'play' : 'pause')} ${data.meta.paused ? '恢复 Router' : '暂停 Router'}</button>` : ''}
       </div>
     </div>
     <div class="grid grid-1-1">
       <section class="card">
-        <div class="card-header"><div><div class="card-title">运行参数</div><div class="card-sub">保存后立即生效</div></div><span class="badge badge-muted">config</span></div>
+        <div class="card-header"><div><div class="card-title">运行参数</div><div class="card-sub">${caps.configWrite ? '保存后立即生效' : '来自项目配置 · 只读'}</div></div><span class="badge badge-muted">config</span></div>
         <div class="form-grid">
-          <div class="field"><label for="cfg-maxConcurrent">maxConcurrent</label><input class="input" id="cfg-maxConcurrent" type="number" min="1" max="8" value="${config.maxConcurrent}"></div>
-          <div class="field"><label for="cfg-maxAttempts">maxAttempts</label><input class="input" id="cfg-maxAttempts" type="number" min="1" max="5" value="${config.maxAttempts}"></div>
-          <div class="field"><label for="cfg-leaseMinutes">leaseMinutes</label><input class="input" id="cfg-leaseMinutes" type="number" min="1" max="240" value="${config.leaseMinutes}"></div>
-          <div class="field"><label for="cfg-tickMs">tickMs</label><input class="input" id="cfg-tickMs" type="number" min="500" max="60000" value="${config.tickMs}"></div>
-          <div class="field"><label for="cfg-workMs">workMs</label><input class="input" id="cfg-workMs" type="number" min="0" max="120000" value="${config.workMs}"></div>
-          <div class="field"><label for="cfg-verifyMs">verifyMs</label><input class="input" id="cfg-verifyMs" type="number" min="0" max="120000" value="${config.verifyMs}"></div>
+          <div class="field"><label for="cfg-maxConcurrent">maxConcurrent</label><input class="input" id="cfg-maxConcurrent" type="number" min="1" max="8" value="${config.maxConcurrent}" ${readOnly}></div>
+          <div class="field"><label for="cfg-maxAttempts">maxAttempts</label><input class="input" id="cfg-maxAttempts" type="number" min="1" max="5" value="${config.maxAttempts}" ${readOnly}></div>
+          <div class="field"><label for="cfg-leaseMinutes">leaseMinutes</label><input class="input" id="cfg-leaseMinutes" type="number" min="1" max="240" value="${config.leaseMinutes}" ${readOnly}></div>
+          <div class="field"><label for="cfg-tickMs">tickMs</label><input class="input" id="cfg-tickMs" type="number" min="500" max="60000" value="${config.tickMs}" ${readOnly}></div>
+          <div class="field"><label for="cfg-workMs">workMs</label><input class="input" id="cfg-workMs" type="number" min="0" max="120000" value="${config.workMs}" ${readOnly}></div>
+          <div class="field"><label for="cfg-verifyMs">verifyMs</label><input class="input" id="cfg-verifyMs" type="number" min="0" max="120000" value="${config.verifyMs}" ${readOnly}></div>
         </div>
-        <div class="modal-actions" style="justify-content:flex-start">
-          <button class="btn btn-primary" data-action="save-config" type="button">${icon('check')} 保存参数</button>
-        </div>
+        ${
+          caps.configWrite
+            ? `<div class="modal-actions" style="justify-content:flex-start">
+                <button class="btn btn-primary" data-action="save-config" type="button">${icon('check')} 保存参数</button>
+              </div>`
+            : `<p class="card-sub" style="font-size:11px;line-height:1.6;margin-top:10px">项目模式只读；参数来自 .self-loop.json 与 Router 配置。</p>`
+        }
       </section>
       <section class="card">
         <div class="card-header"><div><div class="card-title">硬边界</div><div class="card-sub">不可由配置绕过</div></div><span class="badge badge-red">invariants</span></div>
@@ -1142,6 +1210,21 @@ function policyView() {
         <div><div class="meta-label">Node</div><div class="meta-value">node --test</div></div>
         <div><div class="meta-label">Diff</div><div class="meta-value">git diff --check</div></div>
         <div><div class="meta-label">Branch</div><div class="meta-value">no default push</div></div>
+      </div>
+    </section>
+    <section class="card" style="margin-top:14px">
+      <div class="card-header">
+        <div><div class="card-title">本地写权限</div><div class="card-sub">HttpOnly 会话 + Bearer token + Origin 校验</div></div>
+        <span class="badge badge-green">${icon('shield')} protected</span>
+      </div>
+      <div class="meta-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:0">
+        <div class="meta-box"><div class="meta-label">Session</div><div class="meta-value">SameSite=Strict</div><div class="meta-label" style="margin-top:4px">浏览器自动携带</div></div>
+        <div class="meta-box"><div class="meta-label">CLI</div><div class="meta-value">Authorization: Bearer</div><div class="meta-label" style="margin-top:4px">token 文件仅当前用户可读</div></div>
+        <div class="meta-box"><div class="meta-label">Cross-site</div><div class="meta-value">403</div><div class="meta-label" style="margin-top:4px">读接口与 SSE 同样拒绝</div></div>
+      </div>
+      <div class="modal-actions" style="justify-content:flex-start;margin-top:12px">
+        <button class="btn btn-danger" data-action="rotate-token" type="button">${icon('refresh')} 轮换 write token</button>
+        <span class="dim" style="font-size:10.5px">旧会话会立即失效；token 文件不会被 URL 或读接口暴露。</span>
       </div>
     </section>
     <section class="card" style="margin-top:14px">
@@ -1193,9 +1276,11 @@ function toast(message, kind = 'success') {
 }
 
 async function api(path, options = {}) {
+  const { headers = {}, ...rest } = options;
   const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
+    credentials: 'same-origin',
+    ...rest,
+    headers: { 'Content-Type': 'application/json', ...headers },
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
@@ -1334,7 +1419,7 @@ function openSourceModal() {
         <div class="modal-head">
           <div>
             <div class="modal-title" id="modal-title">添加连接器</div>
-            <div class="modal-sub">MVP 只保存配置并接收注入事件；真实 OAuth 与验签在下一版。</div>
+            <div class="modal-sub">GitHub webhook 已支持验签；其他连接器的 OAuth 与出站调用仍在后续版本。</div>
           </div>
           <button class="btn btn-ghost btn-icon" data-action="close-modal" type="button" aria-label="关闭">${icon('x')}</button>
         </div>
@@ -1401,6 +1486,13 @@ async function handleAction(action, id) {
       await api('/api/tick', { method: 'POST' });
       await refresh();
       toast('Router tick 完成');
+      return;
+    }
+    if (action === 'rotate-token') {
+      if (!window.confirm('轮换 write token？所有旧会话和 Bearer token 会立即失效。')) return;
+      await api('/api/auth/rotate', { method: 'POST' });
+      await refresh();
+      toast('write token 已轮换，当前浏览器已换用新会话');
       return;
     }
     if (action === 'refresh') {
@@ -1535,6 +1627,22 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && state.modal) closeModal();
+});
+
+document.addEventListener('change', async (event) => {
+  if (!event.target.matches('[data-project-select]')) return;
+  try {
+    await api('/api/projects/select', {
+      method: 'POST',
+      body: JSON.stringify({ id: event.target.value }),
+    });
+    location.hash = '#/overview';
+    await refresh();
+    toast('已切换目标项目');
+  } catch (error) {
+    toast(error.message, 'error');
+    await refresh();
+  }
 });
 
 window.addEventListener('hashchange', () => {

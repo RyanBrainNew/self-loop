@@ -1,6 +1,6 @@
 # A local-first web console sits beside the skill
 
-Status: accepted for the MVP
+Status: accepted for the MVP; superseded in part by ADR 0008 and ADR 0009
 
 ## Context
 
@@ -26,6 +26,10 @@ Add `server/` as a separate, dependency-free Node 20+ package. It owns:
 
 The server is single-tenant, binds to `127.0.0.1` by default, and has no
 authentication. It never merges a pull request or pushes a default branch.
+
+ADR 0008 replaces the demo store as the product path with a project mode that
+reads the target repository's real `.loop` state. ADR 0009 adds the local write
+token and Origin checks. The demo store remains a first-run and UX fixture.
 
 ## Consequences
 

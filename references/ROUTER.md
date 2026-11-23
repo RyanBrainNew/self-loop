@@ -93,6 +93,29 @@ only evidence artifacts. Neither Worker nor Verifier edits Ticket state.
 `state.json` is an index; `tickets/<N>.json` is the durable Ticket record. Both
 are written atomically. A stale lock is cleared after `router.lockMinutes`.
 
+## Optional web console
+
+`server/` is an optional observer for this state. It must not become a second
+Router:
+
+```bash
+# Demo Router, synthetic state
+npm run serve
+
+# Read this project's real .loop state
+npm run serve:project -- /path/to/project
+```
+
+In project mode the console reads `state.json` and `inbox.json`, watches them
+for SSE updates, and delegates `tick` / `recover` to this CLI so the same lock
+and transaction boundary apply. It never writes Ticket state directly. Actions
+with no Router command are disabled or return `409`.
+
+Writes require the local console token: the browser gets an HttpOnly session
+cookie, a CLI sends `Authorization: Bearer <token>`, and cross-site Origins are
+rejected. The token is local security, not a hosted identity model. See
+`server/README.md` and `docs/adr/0008-console-reads-project-router.md`.
+
 ## Inbox and events
 
 `router post` appends one event to `.loop/inbox.json`; `router tick` drains
@@ -353,22 +376,6 @@ node /opt/skills/self-loop/scripts/run.mjs router tick --repo /srv/project
 The optional GitHub Actions adapter in `adapters/github-actions/` does exactly
 this for `issues`, `pull_request`, `issue_comment`, `workflow_dispatch`, and a
 fallback schedule.
-
-## Optional web console
-
-`server/` adds a local supervision surface without changing the Router
-contract. It runs its own demo Router over `.self-loop/state.json` and exposes
-Sources, Inbox, Tickets, Attempts, verification evidence, Outbox, Workers, and
-Policy through an HTTP API and a dependency-free web UI:
-
-```bash
-npm run serve
-# http://127.0.0.1:4317
-```
-
-The console is single-tenant, binds to `127.0.0.1`, and has no authentication.
-Do not expose it to a public network. Core scripts do not import `server/`;
-the console is an optional caller and not a replacement for `router tick`.
 
 ## Concurrency
 
