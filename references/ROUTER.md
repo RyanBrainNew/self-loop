@@ -26,7 +26,12 @@ node "$SKILL_DIR/scripts/run.mjs" router report   --repo "$TARGET_REPO" --file r
 node "$SKILL_DIR/scripts/run.mjs" router recover  --repo "$TARGET_REPO" --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" router cancel   --repo "$TARGET_REPO" --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" router outbox   --repo "$TARGET_REPO" flush
+node "$SKILL_DIR/scripts/run.mjs" router automations list --repo "$TARGET_REPO"
+node "$SKILL_DIR/scripts/run.mjs" router workers list --repo "$TARGET_REPO"
+node "$SKILL_DIR/scripts/run.mjs" router claim    --repo "$TARGET_REPO"
+node "$SKILL_DIR/scripts/run.mjs" router complete --repo "$TARGET_REPO" --ticket 42 --file result.json
 node "$SKILL_DIR/scripts/migrate-store.mjs" --repo "$TARGET_REPO" --dry-run
+node "$SKILL_DIR/scripts/backup.mjs" --repo "$TARGET_REPO"
 node "$SKILL_DIR/scripts/run.mjs" router clean    --repo "$TARGET_REPO" --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" router watchdog --repo "$TARGET_REPO"
 ```
@@ -75,6 +80,8 @@ relative to that root, never relative to the directory that launched Node.
   state.json
   inbox.json
   outbox.json
+  automations.json         # scheduled task definitions
+  workers.json             # remote worker registry (hashed tokens)
   self-loop.db             # only when storage.backend=sqlite
   connectors/
     jira.json              # Jira incremental cursor and health
@@ -447,6 +454,51 @@ source. A failure rolls back the database transaction. `events.id` and
 `deliveries.idempotency_key` are unique. WAL and `busy_timeout` allow separate
 processes to write distinct Tickets; the Router still owns the state lock and
 serializes its own read-modify-write cycle.
+
+## Scheduled automations
+
+`.loop/automations.json` stores task definitions. `router tick` runs every
+enabled automation whose `nextRunAt` is due and appends one durable `task`
+Inbox event. The event then follows the normal Ticket, lease, Verifier, and
+human-review path. Automation definitions can be managed with
+`router automations list|add|toggle|run`.
+
+## Remote workers
+
+Remote workers register through `router workers register` (or
+`POST /api/workers/register` in the console). The returned `sw_...` token is
+shown once; only its SHA-256 hash is stored in `.loop/workers.json`.
+
+The worker loop is:
+
+1. `router workers heartbeat` every 30 seconds;
+2. `router claim` to lease one queued Ticket and receive the Task Card,
+   Context Packet paths, and lease;
+3. execute the Task Card on its own machine;
+4. `router complete --ticket N --file result.json`.
+
+The Router applies the Result Envelope and the independent Verifier runs on the
+next tick. A worker never writes Ticket state directly. Stale workers become
+offline after two minutes without a heartbeat; tokens older than six minutes
+must be re-registered.
+
+HTTP equivalents are `POST /api/remote/claim`,
+`POST /api/remote/heartbeat`, and `POST /api/remote/complete` with
+`Authorization: Bearer <worker-token>`. They are project-mode only.
+
+## Observability and backup
+
+The local console exposes:
+
+- `GET /api/observability` for a JSON queue/worker summary;
+- `GET /metrics` for Prometheus text metrics (`self_loop_tickets`,
+  `self_loop_inbox_events`, `self_loop_outbox_deliveries`, worker and automation
+  gauges).
+
+`scripts/backup.mjs` copies config, state, tickets, inbox, outbox, SQLite DB,
+connector cursors, automations, and workers into a timestamped directory with a
+manifest. `--include-artifacts` adds Attempt evidence; `restore --dry-run`
+previews the restore and `--force` is required to overwrite an existing `.loop`.
 
 ## Independent verification
 

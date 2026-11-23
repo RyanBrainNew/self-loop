@@ -383,7 +383,7 @@ Proposed configuration:
   },
   "executor": {
     "kind": "local",
-    "command": ["codex", "exec", "--full-auto"]
+    "command": ["codex", "exec", "-s", "workspace-write"]
   },
   "verifier": {
     "commands": ["npm test", "npm run lint"],

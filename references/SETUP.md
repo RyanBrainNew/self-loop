@@ -91,7 +91,7 @@ Show a short proposal before writing:
 ```text
 I will configure:
 - GitHub: owner/name
-- Executor: codex exec --full-auto
+- Executor: codex exec -s workspace-write
 - Independent checks: npm test, npm run lint
 - Language: zh-CN (PR title/body and person-facing Router text)
 - Memory: memory/LESSONS.md, memory/code-standards.md, memory/DECISIONS.md

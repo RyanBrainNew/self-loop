@@ -11,14 +11,15 @@ the `package.json` license field in sync.
 
 - `scripts/` - scheduler-agnostic core (`setup-project`, `run`, `triage`,
   `select`, `retro`, `router`, `verifier`, `outbox`, `executors`, `lib`,
-  `precheck`, `init-memory`, optional `sqlite-store`, `migrate-store`,
-  `e2e-executor`, tests).
+  `precheck`, `init-memory`, `automations`, `workers`, `backup`, optional
+  `sqlite-store`, `migrate-store`, `e2e-executor`, tests).
 - `references/` - workflow, memory, and policy documentation.
 - `templates/memory/` - generic project memory templates.
 - `adapters/orca/` - optional Orca setup, prompts, and precheck.
 - `server/` - local-first Router console: HTTP API, demo seed, project-state
   adapter, persistent multi-repo registry (`project-store.mjs`), local write
-  auth, Slack/Jira connector adapters, and the dependency-free web UI.
+  auth, Slack/Jira connector adapters, observability, and the dependency-free
+  bilingual web UI.
 - `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
 
@@ -53,6 +54,14 @@ the `package.json` license field in sync.
 - `storage.backend` is `json` by default. The optional `sqlite` backend uses
   `node:sqlite`, keeps JSON as a mirror, and enforces unique event ids and
   Outbox idempotency keys. Hosted PostgreSQL remains ADR 0013.
+- Scheduled automations only append `task` Inbox events on a due tick. They do
+  not bypass Task Card, acceptance, lease, Verifier, or human gates.
+- Remote worker tokens are returned once and stored only as SHA-256 hashes in
+  `.loop/workers.json`. Remote workers use `claim`/`complete`; the Router still
+  applies the Result Envelope and remains the only Ticket-state writer.
+- The console UI must keep English technical terms paired with Chinese
+  explanations and provide multiple color themes. Accessibility landmarks
+  (`main`, skip link, aria labels) are part of the contract.
 - Core scripts must not assume the current directory or a project-local `loop/`
   directory. Accept `--repo`, then `SELF_LOOP_REPO`, then legacy `LOOP_REPO`.
 - All git operations, output, and memory paths stay inside the target repo.
@@ -87,6 +96,11 @@ node scripts/setup-project.mjs --repo /path/to/project --dry-run
 node scripts/init-memory.mjs --repo /path/to/project --dry-run
 node scripts/run.mjs router status --repo /path/to/project --json
 node scripts/router.mjs outbox flush --repo /path/to/project
+node scripts/run.mjs router automations list --repo /path/to/project
+node scripts/run.mjs router workers list --repo /path/to/project
+npm run backup -- --repo /path/to/project
+npm run release:check
+curl http://127.0.0.1:4317/metrics
 ```
 
 ## Change rules

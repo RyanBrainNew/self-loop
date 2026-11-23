@@ -151,7 +151,10 @@ MVP 中以下能力是真实的：
 - Slack `/loop` 命令、即时确认和 channel/thread 回写；
 - Jira 增量轮询、持久化 cursor、字段映射、分页、429 退避可见性和认证失败降级；
 - 可选 SQLite 存储、JSON 迁移/导出和双进程 Ticket 写入测试；
-- 真实 executor 端到端 harness（需要本机 Codex/Claude 登录）。
+- 真实 Codex executor 端到端验收：tick → Codex → Result Envelope → 独立 Verifier → awaiting_review；
+- 定时自动化、远程 Worker 注册/心跳/claim/complete、通用 Webhook Outbox；
+- Prometheus `/metrics`、`/api/observability`、备份/恢复；
+- 四套主题和中英文对照界面（Glossary 术语表）。
 
 以下能力目前是模拟的：
 
@@ -159,7 +162,7 @@ MVP 中以下能力是真实的：
 - demo 模式的 Verifier 证据是合成的；
 - Jira / Slack 的托管 OAuth 安装、secret rotation 和多租户凭据存储；
 - hosted 身份、RBAC、PostgreSQL 和多租户隔离。
-- 真实 Codex/Claude E2E 的验收运行；harness 已存在，但需要对应的 CLI 登录。
+- Claude Code 的端到端验收运行（本机未安装；Codex 已验证）。
 
 ## 产品边界
 
@@ -180,6 +183,9 @@ MVP 中以下能力是真实的：
 - [Executor adapters ADR](adr/0011-executor-adapters.md)
 - [Durable Outbox ADR](adr/0012-durable-outbox.md)
 - [Hosted multi-tenant ADR](adr/0013-hosted-multi-tenant-architecture.md)
+- [Hosted OAuth 说明](HOSTED-OAUTH.md)
+- [Codex E2E 证据](EVIDENCE-CODEX-E2E.md)
 - [Optional SQLite store ADR](adr/0014-optional-sqlite-store.md)
 - [Connector ingress ADR](adr/0015-connector-ingress.md)
+- [Automations and remote Workers ADR](adr/0016-automations-and-remote-workers.md)
 - [Router protocol](../references/ROUTER.md)
