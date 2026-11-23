@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import {
   cpSync,
   existsSync,
@@ -48,6 +49,7 @@ import {
   buildContextPacket,
   buildIssueStatusComment,
   buildTaskCard,
+  cancelTicketRun,
   cleanTicketWorktree,
   collectCompletedResults,
   createTicket,
@@ -69,6 +71,19 @@ import {
 } from './router.mjs';
 import { appendEvent, loadInbox } from './inbox.mjs';
 import { discoverVerifierCommands, runVerifier } from './verifier.mjs';
+import {
+  buildExecutorInvocation,
+  executorRegistration,
+  processAlive,
+  resolveExecutorAdapter,
+} from './executors.mjs';
+import {
+  claimOutboxBatch,
+  enqueueTicketOutbox,
+  flushOutbox,
+  loadOutbox,
+  retryOutboxDelivery,
+} from './outbox.mjs';
 
 const now = Date.parse('2026-11-13T08:00:00Z');
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url));
@@ -577,6 +592,7 @@ test('run.mjs retro resolves --repo and writes output inside the target', () => 
   writeFileSync(join(repo, 'README.md'), '# fixture\n');
   execFileSync('git', ['-C', repo, 'add', '.']);
   execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+  writeFileSync(join(repo, 'untracked.txt'), 'not in the verification worktree\n');
 
   execFileSync(process.execPath, [join(scriptsDir, 'run.mjs'), 'retro', '--repo', nested, '--since', 'HEAD'], {
     cwd: tmpdir(),
@@ -764,6 +780,51 @@ test('configured executors receive the installed WORK.md reference', async () =>
   assert.equal(fromString.invocation.args.at(-1), join(repoRoot, 'references', 'WORK.md'));
 });
 
+test('executor adapters expose built-in Codex and Claude invocation contracts', () => {
+  const repo = tempRepo();
+  const codexSettings = resolveSettings(repo, {
+    executorAdapter: 'codex',
+    executorCommand: 'codex',
+  }, {});
+  const codexInvocation = buildExecutorInvocation({
+    settings: codexSettings,
+    workReference: 'WORK.md',
+  });
+  assert.equal(resolveExecutorAdapter(codexSettings), 'codex');
+  assert.equal(codexInvocation.adapter, 'codex');
+  assert.equal(codexInvocation.shell, true);
+  assert.deepEqual(codexInvocation.args.slice(0, 2), ['exec', '--full-auto']);
+  assert.match(codexInvocation.args.at(-1), /Worker protocol at WORK\.md/);
+  assert.equal(codexInvocation.timeoutMs, 45 * 60 * 1000);
+
+  const claudeSettings = resolveSettings(repo, {
+    executorAdapter: 'claude',
+    executorCommand: ['claude'],
+    executorTimeoutMinutes: 12,
+  }, {});
+  const claudeInvocation = buildExecutorInvocation({
+    settings: claudeSettings,
+    workReference: 'WORK.md',
+  });
+  assert.equal(claudeInvocation.adapter, 'claude');
+  assert.equal(claudeInvocation.args[0], '-p');
+  assert.match(claudeInvocation.args.at(-1), /SELF_LOOP_RESULT/);
+  assert.equal(claudeInvocation.timeoutMs, 12 * 60 * 1000);
+
+  const customSettings = resolveSettings(repo, {
+    executorAdapter: 'custom-agent',
+    executorCommand: ['custom-agent', '--run'],
+  }, {});
+  assert.deepEqual(executorRegistration(customSettings), {
+    adapter: 'custom-agent',
+    kind: 'custom-agent',
+    command: 'custom-agent --run',
+    capabilities: ['issue-to-pr'],
+    concurrency: 1,
+    timeoutMinutes: 45,
+  });
+});
+
 test('Context Packet projects roles and truncates memory', () => {
   const repo = tempRepo();
   mkdirSync(join(repo, 'memory'), { recursive: true });
@@ -885,9 +946,12 @@ test('Verifier runs in a clean worktree and returns objective evidence', () => {
   const passed = runVerifier({ repoRoot: repo, settings, ticket });
   assert.equal(passed.status, 'pass');
   assert.ok(existsSync(passed.evidencePath));
+  assert.ok(existsSync(passed.checks[0].stdoutPath));
+  assert.ok(existsSync(passed.checks[0].stderrPath));
   assert.equal(discoverVerifierCommands({ repoRoot: repo, settings }).length, 1);
   const kept = runVerifier({ repoRoot: repo, settings, ticket, keep: true });
   assert.ok(existsSync(kept.worktree));
+  assert.equal(existsSync(join(kept.worktree, 'untracked.txt')), false);
   const keptAgain = runVerifier({ repoRoot: repo, settings, ticket, keep: true });
   assert.equal(keptAgain.status, 'pass');
   assert.ok(existsSync(keptAgain.worktree));
@@ -902,6 +966,305 @@ test('Verifier runs in a clean worktree and returns objective evidence', () => {
     ticket: { ...ticket, number: 9 },
   });
   assert.equal(failed.status, 'fail');
+});
+
+test('Verifier treats missing gates as human review instead of a pass', () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+  const settings = resolveSettings(repo, { verifierCommands: [] }, {});
+  const result = runVerifier({
+    repoRoot: repo,
+    settings,
+    ticket: { number: 81, attempts: 1, branch: 'HEAD' },
+  });
+  assert.equal(result.status, 'human_review');
+  assert.equal(result.checks.length, 0);
+  assert.ok(existsSync(result.evidencePath));
+  assert.match(readFileSync(result.evidencePath, 'utf8'), /no verifier commands discovered/);
+
+  const broken = runVerifier({
+    repoRoot: repo,
+    settings: resolveSettings(repo, { verifierCommands: ['node -e "process.exit(0)"'] }, {}),
+    ticket: { number: 82, attempts: 1, branch: 'missing-verification-branch' },
+  });
+  assert.equal(broken.status, 'human_review');
+  assert.match(broken.reason, /could not create verification worktree/);
+});
+
+test('Outbox adapters use mock HTTP for GitHub, Jira, and Slack delivery semantics', async () => {
+  const repo = tempRepo();
+  let githubMode = 'ok';
+  const githubPosts = [];
+  const requests = [];
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      requests.push({ method: req.method, url: req.url, body });
+      if (req.url.startsWith('/repos/acme/outbox/issues/')) {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end('[]');
+          return;
+        }
+        githubPosts.push({ url: req.url, body });
+        if (githubMode === '401') {
+          res.writeHead(401, { 'Content-Type': 'application/json', 'x-github-request-id': 'gh-401' });
+          res.end('{"message":"bad credentials"}');
+          return;
+        }
+        if (githubMode === '429') {
+          res.writeHead(429, { 'Content-Type': 'application/json', 'retry-after': '0' });
+          res.end('{"message":"rate limited"}');
+          return;
+        }
+        if (githubMode === '500') {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end('{"message":"server error"}');
+          return;
+        }
+        res.writeHead(201, { 'Content-Type': 'application/json', 'x-github-request-id': 'gh-ok' });
+        res.end('{"id":1}');
+        return;
+      }
+      if (req.url.startsWith('/rest/api/3/issue/')) {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end('{"comments":[]}');
+          return;
+        }
+        res.writeHead(201, { 'Content-Type': 'application/json', 'x-arequestid': 'jira-ok' });
+        res.end('{"id":"10001"}');
+        return;
+      }
+      if (req.url === '/slack') {
+        res.writeHead(200, { 'Content-Type': 'text/plain', 'x-slack-req-id': 'slack-ok' });
+        res.end('ok');
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end('{"error":"not found"}');
+    });
+  });
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    writeFileSync(join(repo, '.self-loop.json'), `${JSON.stringify({
+      githubRepo: 'acme/outbox',
+      outbox: {
+        enabled: true,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+        adapters: {
+          github: {
+            enabled: true,
+            apiBaseUrl: base,
+            tokenEnv: 'TEST_GITHUB_TOKEN',
+          },
+          jira: {
+            enabled: true,
+            baseUrl: base,
+            email: 'loop@example.com',
+            tokenEnv: 'TEST_JIRA_TOKEN',
+          },
+          slack: {
+            enabled: true,
+            channel: '#loop',
+            webhookUrlEnv: 'TEST_SLACK_WEBHOOK',
+          },
+        },
+      },
+    }, null, 2)}\n`);
+    const settings = resolveSettings(repo, {}, {});
+    const env = {
+      TEST_GITHUB_TOKEN: 'github-token',
+      TEST_JIRA_TOKEN: 'jira-token',
+      TEST_SLACK_WEBHOOK: `${base}/slack`,
+    };
+    const ticket = {
+      number: 90,
+      title: 'Outbox fixture',
+      attempts: 1,
+      state: 'awaiting_review',
+      url: 'https://example.atlassian.net/browse/PROJ-90',
+    };
+    const queued = enqueueTicketOutbox({
+      settings,
+      ticket,
+      state: 'awaiting_review',
+      body: 'Ready for review',
+    });
+    assert.equal(queued.length, 3);
+    assert.deepEqual(queued.map((delivery) => delivery.channel).sort(), ['github', 'jira', 'slack']);
+
+    const first = await flushOutbox(settings, { env });
+    assert.equal(first.length, 3);
+    assert.equal(first.every((delivery) => delivery.state === 'sent'), true);
+    assert.equal(githubPosts.length, 1);
+    assert.match(githubPosts[0].body, /self-loop:outbox:/);
+    assert.ok(requests.some((request) => request.url === '/slack' && request.body.includes('Ready for review')));
+
+    const second = await flushOutbox(settings, { env });
+    assert.equal(second.length, 0);
+    assert.equal(githubPosts.length, 1);
+
+    githubMode = '429';
+    enqueueTicketOutbox({
+      settings,
+      ticket: { ...ticket, number: 91 },
+      state: 'awaiting_review',
+      body: 'Retry me',
+    });
+    const rateLimited = await flushOutbox(settings, { env });
+    const githubRetry = rateLimited.find(
+      (delivery) => delivery.ticket === 91 && delivery.channel === 'github',
+    );
+    assert.equal(githubRetry.state, 'failed');
+    assert.equal(githubRetry.attempts, 1);
+    githubMode = 'ok';
+    const retried = await flushOutbox(settings, { env });
+    assert.equal(
+      retried.find((delivery) => delivery.ticket === 91 && delivery.channel === 'github').state,
+      'sent',
+    );
+
+    githubMode = '401';
+    enqueueTicketOutbox({
+      settings,
+      ticket: { ...ticket, number: 92 },
+      state: 'awaiting_review',
+      body: 'Auth failure',
+    });
+    const authFailed = await flushOutbox(settings, { env });
+    const dead = authFailed.find(
+      (delivery) => delivery.ticket === 92 && delivery.channel === 'github',
+    );
+    assert.equal(dead.state, 'dead');
+    assert.equal(dead.statusCode, 401);
+    const requeued = retryOutboxDelivery(settings, dead.id);
+    assert.equal(requeued.state, 'pending');
+    githubMode = 'ok';
+    const afterReplay = await flushOutbox(settings, { env });
+    assert.equal(
+      afterReplay.find((delivery) => delivery.id === dead.id).state,
+      'sent',
+    );
+
+    githubMode = '500';
+    enqueueTicketOutbox({
+      settings,
+      ticket: { ...ticket, number: 93 },
+      state: 'awaiting_review',
+      body: 'Server failure',
+    });
+    const serverFailure = await flushOutbox(settings, { env });
+    assert.equal(
+      serverFailure.find((delivery) => delivery.ticket === 93 && delivery.channel === 'github').state,
+      'failed',
+    );
+    assert.equal(loadOutbox(settings).deliveries.some((delivery) => delivery.idempotencyKey.includes('ticket:90')), true);
+  } finally {
+    await new Promise((resolvePromise) => server.close(resolvePromise));
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('Outbox recovers a delivery interrupted mid-flush', () => {
+  const repo = tempRepo();
+  try {
+    writeFileSync(join(repo, '.self-loop.json'), `${JSON.stringify({
+      githubRepo: 'acme/outbox',
+      outbox: {
+        enabled: true,
+        adapters: {
+          github: { enabled: true, tokenEnv: 'TEST_GITHUB_TOKEN' },
+        },
+      },
+    }, null, 2)}\n`);
+    mkdirSync(join(repo, '.loop'), { recursive: true });
+    const interruptedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    writeFileSync(join(repo, '.loop', 'outbox.json'), `${JSON.stringify({
+      version: 1,
+      deliveries: [
+        {
+          id: 'out_interrupted',
+          ticket: 95,
+          channel: 'github',
+          target: 'acme/outbox#95',
+          state: 'sending',
+          attempts: 1,
+          maxAttempts: 5,
+          lastAttemptAt: interruptedAt,
+          nextAttemptAt: interruptedAt,
+          createdAt: interruptedAt,
+          updatedAt: interruptedAt,
+        },
+      ],
+    }, null, 2)}\n`);
+    const settings = resolveSettings(repo, {}, {});
+    claimOutboxBatch(settings, { limit: 0 });
+    const delivery = loadOutbox(settings).deliveries.find((item) => item.id === 'out_interrupted');
+    assert.equal(delivery.state, 'failed');
+    assert.equal(delivery.lastError, 'delivery interrupted before completion');
+    assert.ok(Date.parse(delivery.nextAttemptAt) <= Date.now());
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('Router tick enqueues Outbox without making a network request', async () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, 'README.md'), '# fixture\n');
+  execFileSync('git', ['-C', repo, 'add', '.']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
+  const agent = join(repo, 'ready-agent.mjs');
+  writeFileSync(agent, [
+    "import { writeFileSync } from 'node:fs';",
+    'const ticket = Number(process.env.SELF_LOOP_TICKET);',
+    'writeFileSync(process.env.SELF_LOOP_RESULT, JSON.stringify({',
+    '  ticket,',
+    '  attempt: 1,',
+    "  state: 'ready',",
+    "  humanText: 'ready',",
+    '  artifactRefs: [],',
+    '}));',
+  ].join('\n'));
+  writeFileSync(join(repo, '.self-loop.json'), `${JSON.stringify({
+    githubRepo: 'acme/offline',
+    outbox: {
+      enabled: true,
+      adapters: {
+        github: {
+          enabled: true,
+          apiBaseUrl: 'http://127.0.0.1:1',
+          tokenEnv: 'TEST_GITHUB_TOKEN',
+        },
+      },
+    },
+  }, null, 2)}\n`);
+  const settings = resolveSettings(repo, {
+    worktreeMode: 'external',
+    executorCommand: [process.execPath, agent],
+    verifierCommands: ['node -e "process.exit(0)"'],
+  }, {});
+  const result = await tickRouter({
+    repoRoot: repo,
+    settings,
+    candidate: {
+      number: 94,
+      title: 'offline outbox',
+      body: '## Acceptance\n- [ ] works',
+      labels: ['ready-for-agent'],
+    },
+  });
+  assert.equal(result.status, 'pass');
+  assert.equal(loadState(settings).tickets['94'].state, 'awaiting_review');
+  const outbox = loadOutbox(settings);
+  assert.equal(outbox.deliveries.length, 1);
+  assert.equal(outbox.deliveries[0].state, 'pending');
+  assert.equal(outbox.deliveries[0].attempts, 0);
 });
 
 test('Task Card without concrete acceptance blocks before dispatch', async () => {
@@ -1238,6 +1601,47 @@ test('completed Result Envelopes are collected without an event', () => {
   assert.equal(loadState(settings).tickets['32'].state, 'verifying');
 });
 
+test('a dead background process without a Result Envelope releases its slot', () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, {
+    worktreeMode: 'external',
+    maxAttempts: 2,
+  }, {});
+  const state = emptyState(settings);
+  const ticket = createTicket({
+    number: 33,
+    title: 'crashed',
+    body: '## Acceptance\n- [ ] works',
+  }, settings);
+  ticket.state = 'working';
+  ticket.attempts = 1;
+  ticket.lease = {
+    startedAt: new Date(Date.now() - 10_000).toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+  ticket.worker = {
+    pid: 999_999_999,
+    startedAt: new Date(Date.now() - 10_000).toISOString(),
+    heartbeatAt: new Date(Date.now() - 10_000).toISOString(),
+    timeoutMinutes: 45,
+  };
+  ticket.resultPath = join(settings.outDir, 'artifacts', '33', 'attempt-1', 'result.json');
+  state.tickets['33'] = ticket;
+  state.activeTicket = 33;
+  saveState(settings, state);
+
+  const applied = collectCompletedResults({
+    repoRoot: repo,
+    settings,
+    state: loadState(settings),
+  });
+  assert.equal(applied[0].status, 'applied');
+  const after = loadState(settings);
+  assert.equal(after.tickets['33'].state, 'queued');
+  assert.equal(after.tickets['33'].worker.exitReason, 'process-exited-without-result');
+  assert.equal(after.tickets['33'].lease, null);
+});
+
 test('maxConcurrent dispatches several Tickets and leaves the rest for the next tick', async () => {
   const repo = tempRepo();
   const agent = join(repo, 'agent.mjs');
@@ -1332,6 +1736,43 @@ test('background dispatch detaches and a later tick collects the result', async 
 
   await tickRouter({ repoRoot: repo, settings });
   assert.equal(loadState(settings).tickets['50'].lastResult?.state, 'progress');
+});
+
+test('cancelling a background Attempt stops the process and releases its slot', async () => {
+  const repo = tempRepo();
+  const agent = join(repo, 'cancel-agent.mjs');
+  writeFileSync(agent, 'setTimeout(() => {}, 60_000);\n');
+  const settings = resolveSettings(repo, {
+    worktreeMode: 'external',
+    executorCommand: [process.execPath, agent],
+    dispatchMode: 'background',
+  }, {});
+  await tickRouter({
+    repoRoot: repo,
+    settings,
+    candidate: {
+      number: 51,
+      title: 'cancel',
+      body: '## Acceptance\n- [ ] works',
+      labels: ['ready-for-agent'],
+    },
+  });
+  const state = loadState(settings);
+  const ticket = state.tickets['51'];
+  assert.ok(ticket.worker?.pid);
+  assert.equal(processAlive(ticket.worker.pid), true);
+
+  cancelTicketRun({ settings, state, ticket });
+  assert.equal(ticket.state, 'dropped');
+  assert.equal(ticket.lease, null);
+  assert.equal(ticket.worker.exitReason, 'cancelled');
+  let alive = true;
+  for (let attempt = 0; attempt < 40 && alive; attempt++) {
+    alive = processAlive(ticket.worker.pid);
+    if (alive) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(alive, false);
+  assert.equal(loadState(settings).tickets['51'].state, 'dropped');
 });
 
 test('wait dispatch verifies a ready result in the same tick', async () => {

@@ -41,6 +41,21 @@ import {
 } from './inbox.mjs';
 import { selectCandidates } from './select.mjs';
 import { discoverVerifierCommands, runVerifier } from './verifier.mjs';
+import {
+  buildExecutorInvocation,
+  executorRegistration,
+  processAlive,
+  stopExecutorProcess,
+} from './executors.mjs';
+import {
+  applyOutboxResults,
+  claimOutboxBatch,
+  deliverOutbox,
+  enqueueTicketOutbox,
+  loadOutbox,
+  outboxSummary,
+  retryOutboxDelivery,
+} from './outbox.mjs';
 
 export const ROUTER_STATE_VERSION = 1;
 export const STATUS_MARKER = '<!-- self-loop:status -->';
@@ -63,6 +78,11 @@ const skillRoot = fileURLToPath(new URL('..', import.meta.url));
 
 function nowIso(now = Date.now()) {
   return new Date(now).toISOString();
+}
+
+function parseTime(value) {
+  const parsed = Date.parse(value || '');
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function gitOrThrow(cwd, args) {
@@ -532,6 +552,17 @@ export async function publishIssueStatus({ settings, ticket, token = resolveToke
   return { status: 'created', comment: created.id };
 }
 
+export function queueTicketOutbox({ settings, ticket, now = Date.now() } = {}) {
+  if (!settings.outbox?.enabled || !ticket) return [];
+  return enqueueTicketOutbox({
+    settings,
+    ticket,
+    state: ticket.state,
+    body: buildIssueStatusComment(ticket, settings.language),
+    now,
+  });
+}
+
 export function applyResultToTicket(ticket, result, language = 'zh-CN') {
   ticket.lastResult = result;
   ticket.attempts = Math.max(ticket.attempts || 0, result.attempt || 0);
@@ -592,25 +623,7 @@ function ensureWorktree({ repoRoot, settings, ticket }) {
 }
 
 function executorInvocation(settings, workReference) {
-  const configured = settings.executor.command;
-  if (!configured) return null;
-  if (Array.isArray(configured)) {
-    if (configured.length === 0) return null;
-    return {
-      file: String(configured[0]),
-      args: [
-        ...configured.slice(1).map(String),
-        ...(settings.executor.args || []),
-        workReference,
-      ],
-      shell: false,
-    };
-  }
-  return {
-    file: String(configured),
-    args: [...(settings.executor.args || []), workReference],
-    shell: true,
-  };
+  return buildExecutorInvocation({ settings, workReference });
 }
 
 export function prepareDispatch({ repoRoot, settings, state, ticket, now = Date.now() } = {}) {
@@ -637,6 +650,8 @@ export function prepareDispatch({ repoRoot, settings, state, ticket, now = Date.
   mkdirSync(artifact, { recursive: true });
   ticket.resultPath = join(artifact, 'result.json');
   rmSync(ticket.resultPath, { force: true });
+  ticket.executor = executorRegistration(settings);
+  ticket.worker = null;
   const paths = writeTicketContext({ repoRoot, settings, ticket, taskCard });
   ticket.updatedAt = nowIso(now);
   saveTicket(settings, ticket);
@@ -654,6 +669,7 @@ function dispatchEnv({ repoRoot, settings, ticket, prepared }) {
     SELF_LOOP_TASK_CARD: join(artifactRoot(settings, ticket), 'task-card.json'),
     SELF_LOOP_CONTEXT: prepared.paths.workerPath,
     SELF_LOOP_RESULT: ticket.resultPath,
+    SELF_LOOP_EXECUTOR_ADAPTER: String(settings.executor.adapter || 'command'),
   };
 }
 
@@ -667,13 +683,21 @@ function applyDispatchExit({ settings, state, ticket, result }) {
   }
 
   if (result.error || result.status !== 0) {
+    const timedOut = result.error?.code === 'ETIMEDOUT';
     applyResultToTicket(ticket, {
       ticket: ticket.number,
       attempt: ticket.attempts,
-      state: 'failed',
-      humanText: result.error?.message || `executor exited with ${result.status}`,
+      state: timedOut ? 'timeout' : 'failed',
+      humanText: timedOut
+        ? `executor timed out after ${settings.executor.timeoutMinutes} minutes`
+        : result.error?.message || `executor exited with ${result.status}`,
       artifactRefs: [],
-      error: { code: 'EXECUTOR_FAILED', userCause: 'Worker execution failed', userAction: 'Review the log and retry', system: false },
+      error: {
+        code: timedOut ? 'EXECUTOR_TIMEOUT' : 'EXECUTOR_FAILED',
+        userCause: timedOut ? 'Worker execution timed out' : 'Worker execution failed',
+        userAction: 'Review the log and retry',
+        system: false,
+      },
       clarify: null,
       notify: true,
       asOf: nowIso(),
@@ -753,6 +777,9 @@ export async function executeDispatch({
     ticket.worker = {
       pid: child.pid,
       startedAt: nowIso(),
+      heartbeatAt: nowIso(),
+      adapter: invocation.adapter,
+      timeoutMinutes: settings.executor.timeoutMinutes,
       stdout: repoRelativePath(repoRoot, stdoutPath),
       stderr: repoRelativePath(repoRoot, stderrPath),
     };
@@ -767,7 +794,18 @@ export async function executeDispatch({
     env,
     stdio: 'inherit',
     shell: invocation.shell,
+    timeout: invocation.timeoutMs,
+    killSignal: 'SIGTERM',
   });
+  ticket.worker = {
+    pid: result.pid || null,
+    startedAt: ticket.lease?.startedAt || nowIso(),
+    heartbeatAt: nowIso(),
+    adapter: invocation.adapter,
+    timeoutMinutes: settings.executor.timeoutMinutes,
+    exitCode: result.status,
+    signal: result.signal || null,
+  };
   return applyDispatchExit({ settings, state, ticket, result });
 }
 
@@ -802,6 +840,7 @@ export function verifyTicket({ repoRoot, settings, state, ticket, keep = false }
   ticket.updatedAt = nowIso();
   saveTicket(settings, ticket);
   saveState(settings, state);
+  queueTicketOutbox({ settings, ticket });
   return verification;
 }
 
@@ -814,6 +853,28 @@ export function recoverTicket({ settings, state, ticket, now = Date.now() } = {}
   ticket.updatedAt = nowIso(now);
   saveTicket(settings, ticket);
   saveState(settings, state);
+  return ticket;
+}
+
+export function cancelTicketRun({
+  settings,
+  state,
+  ticket,
+  now = Date.now(),
+} = {}) {
+  if (TERMINAL_STATES.has(ticket.state)) return ticket;
+  stopExecutorProcess(ticket.worker?.pid);
+  if (ticket.worker) {
+    ticket.worker.finishedAt = nowIso(now);
+    ticket.worker.exitReason = 'cancelled';
+  }
+  ticket.state = 'dropped';
+  ticket.lease = null;
+  ticket.humanQuestion = null;
+  ticket.updatedAt = nowIso(now);
+  saveTicket(settings, ticket);
+  saveState(settings, state);
+  queueTicketOutbox({ settings, ticket, now });
   return ticket;
 }
 
@@ -875,7 +936,76 @@ export function collectCompletedResults({ repoRoot, settings, state, now = Date.
   const applied = [];
   for (const ticket of Object.values(state.tickets)) {
     if (!['claimed', 'working'].includes(ticket.state)) continue;
-    if (!ticket.resultPath || !existsSync(ticket.resultPath)) continue;
+    if (!ticket.resultPath || !existsSync(ticket.resultPath)) {
+      const started = parseTime(ticket.worker?.startedAt || ticket.lease?.startedAt);
+      const ageMs = started ? now - started : 0;
+      const timeoutMs = Number(
+        ticket.worker?.timeoutMinutes || settings.executor.timeoutMinutes,
+      ) * 60 * 1000;
+      if (started && ageMs > timeoutMs) {
+        stopExecutorProcess(ticket.worker?.pid);
+        if (ticket.worker) {
+          ticket.worker.finishedAt = nowIso(now);
+          ticket.worker.heartbeatAt = nowIso(now);
+          ticket.worker.exitReason = 'timeout';
+        }
+        applyResultToTicket(ticket, {
+          ticket: ticket.number,
+          attempt: ticket.attempts,
+          state: 'timeout',
+          humanText: `executor timed out after ${Math.round(timeoutMs / 60_000)} minutes`,
+          artifactRefs: [],
+          error: {
+            code: 'EXECUTOR_TIMEOUT',
+            userCause: 'Worker execution timed out',
+            userAction: 'Review the log and retry',
+            system: false,
+          },
+          clarify: null,
+          notify: true,
+          asOf: nowIso(now),
+        }, settings.language);
+        saveTicket(settings, ticket);
+        applied.push({ number: ticket.number, status: 'applied', state: ticket.state, asOf: nowIso(now) });
+        continue;
+      }
+      if (ticket.worker?.pid && ageMs > 2000 && !processAlive(ticket.worker.pid)) {
+        if (ticket.worker) {
+          ticket.worker.finishedAt = nowIso(now);
+          ticket.worker.heartbeatAt = nowIso(now);
+          ticket.worker.exitReason = 'process-exited-without-result';
+        }
+        applyResultToTicket(ticket, {
+          ticket: ticket.number,
+          attempt: ticket.attempts,
+          state: 'failed',
+          humanText: 'worker process exited without a Result Envelope',
+          artifactRefs: [],
+          error: {
+            code: 'EXECUTOR_EXITED',
+            userCause: 'Worker exited before reporting a result',
+            userAction: 'Review the log and retry',
+            system: false,
+          },
+          clarify: null,
+          notify: true,
+          asOf: nowIso(now),
+        }, settings.language);
+        saveTicket(settings, ticket);
+        applied.push({ number: ticket.number, status: 'applied', state: ticket.state, asOf: nowIso(now) });
+        continue;
+      }
+      if (ticket.worker?.pid && processAlive(ticket.worker.pid)) {
+        ticket.worker.heartbeatAt = nowIso(now);
+        if (ticket.lease) {
+          const extended = new Date(now + settings.router.leaseMinutes * 60 * 1000).toISOString();
+          if (!ticket.lease.expiresAt || parseTime(ticket.lease.expiresAt) < parseTime(extended)) {
+            ticket.lease.expiresAt = extended;
+          }
+        }
+      }
+      continue;
+    }
     let envelope;
     try {
       envelope = validateResultEnvelope(readJson(ticket.resultPath, null));
@@ -1175,6 +1305,10 @@ export async function tickRouter({
       remember(ticket);
     }
 
+    for (const ticket of changed.values()) {
+      queueTicketOutbox({ settings, ticket, now });
+    }
+
     syncActiveTicket(state);
     saveState(settings, state);
 
@@ -1297,6 +1431,8 @@ async function main() {
   const ticketNumber = values.ticket ? Number(values.ticket) : null;
   const notify = async (ticket) => {
     if (flags['no-notify'] || !ticket) return;
+    queueTicketOutbox({ settings, ticket });
+    if (settings.outbox.enabled) return;
     try {
       const result = await publishIssueStatus({ settings, ticket });
       if (result.status === 'created' || result.status === 'updated') {
@@ -1361,6 +1497,51 @@ async function main() {
       events: selected,
     }, null, 2));
     return 0;
+  }
+
+  if (sub === 'outbox') {
+    const action = rest[1] || 'status';
+    if (action === 'status') {
+      const outbox = loadOutbox(settings);
+      console.log(JSON.stringify({
+        summary: outboxSummary(outbox),
+        deliveries: outbox.deliveries.slice(0, Number(values.limit || 50)),
+      }, null, 2));
+      return 0;
+    }
+    if (action === 'retry') {
+      if (!values.id) throw new Error('router outbox retry requires --id <delivery>');
+      return withStateLock(settings, async () => {
+        const delivery = retryOutboxDelivery(settings, values.id);
+        console.log(JSON.stringify({ id: delivery.id, state: delivery.state }, null, 2));
+        return 0;
+      });
+    }
+    if (action === 'flush') {
+      const limit = Math.min(100, Math.max(1, Number(values.limit || 20)));
+      const claimed = await withStateLock(settings, async () =>
+        claimOutboxBatch(settings, { limit }));
+      const results = [];
+      for (const delivery of claimed) {
+        const outcome = await deliverOutbox(delivery, settings);
+        results.push({ id: delivery.id, ...outcome });
+      }
+      const applied = await withStateLock(settings, async () =>
+        applyOutboxResults(settings, results));
+      console.log(JSON.stringify({
+        flushed: applied.length,
+        summary: outboxSummary(loadOutbox(settings)),
+        results: applied.map((delivery) => ({
+          id: delivery.id,
+          state: delivery.state,
+          statusCode: delivery.statusCode,
+          requestId: delivery.requestId,
+          error: delivery.lastError,
+        })),
+      }, null, 2));
+      return 0;
+    }
+    throw new Error(`unknown router outbox action: ${action} (status|flush|retry)`);
   }
 
   if (sub === 'tick') {
@@ -1446,6 +1627,18 @@ async function main() {
     });
   }
 
+  if (sub === 'cancel') {
+    return withStateLock(settings, async () => {
+      const state = loadState(settings);
+      const ticket = state.tickets[String(ticketNumber)];
+      if (!ticket) throw new Error(`unknown Ticket #${ticketNumber}`);
+      cancelTicketRun({ settings, state, ticket });
+      console.log(`[router] cancelled #${ticket.number}; state=${ticket.state}`);
+      if (!flags['no-notify']) await notify(ticket);
+      return 0;
+    });
+  }
+
   if (sub === 'clean') {
     return withStateLock(settings, async () => {
       const state = loadState(settings);
@@ -1477,7 +1670,7 @@ async function main() {
     });
   }
 
-  console.error(`[router] unknown command: ${sub} (tick|status|post|inbox|report|verify|recover|clean|watchdog)`);
+  console.error(`[router] unknown command: ${sub} (tick|status|post|inbox|outbox|report|verify|recover|cancel|clean|watchdog)`);
   return 2;
 }
 

@@ -24,6 +24,8 @@ node "$SKILL_DIR/scripts/run.mjs" router inbox    --repo "$TARGET_REPO" --json
 node "$SKILL_DIR/scripts/run.mjs" router verify   --repo "$TARGET_REPO" --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" router report   --repo "$TARGET_REPO" --file result.json
 node "$SKILL_DIR/scripts/run.mjs" router recover  --repo "$TARGET_REPO" --ticket 42
+node "$SKILL_DIR/scripts/run.mjs" router cancel   --repo "$TARGET_REPO" --ticket 42
+node "$SKILL_DIR/scripts/run.mjs" router outbox   --repo "$TARGET_REPO" flush
 node "$SKILL_DIR/scripts/run.mjs" router clean    --repo "$TARGET_REPO" --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" router watchdog --repo "$TARGET_REPO"
 ```
@@ -37,6 +39,8 @@ node "$SKILL_DIR/scripts/run.mjs" router watchdog --repo "$TARGET_REPO"
 | `verify` | Run the independent Verifier for one Ticket. |
 | `report` | Apply a Worker's Result Envelope written outside the process. |
 | `recover` | Put a blocked Ticket back in the queue for one more Attempt. A person runs this. |
+| `cancel` | Stop a running executor process and mark the Ticket `dropped`. |
+| `outbox` | Inspect (`status`), retry one delivery (`retry --id`), or send due deliveries (`flush`). |
 | `clean` | Remove worktrees for terminal Tickets, or one Ticket with `--ticket`. |
 | `watchdog` | Apply expired-lease recovery/blocking transitions; `--dry-run` only reports. |
 
@@ -69,6 +73,7 @@ relative to that root, never relative to the directory that launched Node.
 .loop/
   state.json
   inbox.json
+  outbox.json
   lock
   tickets/
     42.json
@@ -86,7 +91,7 @@ relative to that root, never relative to the directory that launched Node.
         verify-1.stderr.txt
 ```
 
-Only the Router writes `state.json`, `tickets/`, `inbox.json`, and the lock. A
+Only the Router writes `state.json`, `tickets/`, `inbox.json`, `outbox.json`, and the lock. A
 Worker writes its Attempt-scoped Result Envelope and PR body. A Verifier writes
 only evidence artifacts. Neither Worker nor Verifier edits Ticket state.
 
@@ -102,19 +107,26 @@ Router:
 # Demo Router, synthetic state
 npm run serve
 
-# Read this project's real .loop state
+# Register and open one or more real projects
 npm run serve:project -- /path/to/project
 ```
 
-In project mode the console reads `state.json` and `inbox.json`, watches them
-for SSE updates, and delegates `tick` / `recover` to this CLI so the same lock
-and transaction boundary apply. It never writes Ticket state directly. Actions
-with no Router command are disabled or return `409`.
+In project mode the console reads `state.json`, `inbox.json`, and `outbox.json`,
+watches them for SSE updates, and delegates `tick` / `recover` / `cancel` /
+`outbox` to this CLI so the same lock and transaction boundary apply. It never
+writes Ticket state directly. Actions with no Router command are disabled or
+return `409`.
+
+The console keeps a local project registry at `~/.self-loop/projects.json`.
+Projects added through the UI or `--repo` are available from one address and can
+be switched from the sidebar. Use `--projects-file` to override the registry or
+`--no-demo` to keep demo event seeding off.
 
 Writes require the local console token: the browser gets an HttpOnly session
 cookie, a CLI sends `Authorization: Bearer <token>`, and cross-site Origins are
 rejected. The token is local security, not a hosted identity model. See
-`server/README.md` and `docs/adr/0008-console-reads-project-router.md`.
+`server/README.md`, `docs/adr/0008-console-reads-project-router.md`, and
+`docs/adr/0010-multi-project-console.md`.
 
 ## Inbox and events
 
@@ -296,8 +308,9 @@ optional Orca adapter is one such scheduler; the core never requires it.
 ```json
 {
   "executor": {
-    "kind": "local",
-    "command": ["codex", "exec", "--full-auto"]
+    "adapter": "codex",
+    "command": ["codex"],
+    "timeoutMinutes": 45
   },
   "router": {
     "maxConcurrent": 3,
@@ -314,10 +327,19 @@ SELF_LOOP_TICKET=<N>
 SELF_LOOP_TASK_CARD=<.../task-card.json>
 SELF_LOOP_CONTEXT=<.../context.worker.json>
 SELF_LOOP_RESULT=<.../result.json>
+SELF_LOOP_EXECUTOR_ADAPTER=codex
 ```
 
 The installed `references/WORK.md` path is also passed as the executor's final
-argument, for both array and string executor commands.
+argument for explicit commands. Built-in `codex` and `claude` adapters add a
+short protocol prompt when only a bare command is configured. Custom adapter
+names are accepted and use the generic command contract. The router records
+the PID, adapter, timeout, heartbeat, stdout/stderr, and exit reason.
+
+If a background process exits without a Result Envelope, exceeds
+`executor.timeoutMinutes`, or is cancelled, the Router releases the concurrency
+slot immediately. It does not wait for lease expiry when process state is
+already decisive.
 
 The Worker works only in its worktree, pushes its branch, opens a PR whose body
 starts with `Closes #N`, and writes a Result Envelope. It never merges, never
@@ -326,6 +348,26 @@ pushes the default branch, and never edits labels or policy.
 The Router owns the single status comment on the Issue. It is updated in place
 using the hidden marker `<!-- self-loop:status -->`. Notification failure is
 logged and does not change a gate result.
+
+When `outbox.enabled` is true, notification is queued instead of sent inline.
+Run `router outbox flush` from cron or the console.
+
+## Outbox
+
+Router tick only enqueues. Network delivery is a separate command so a slow or
+rate-limited external API cannot block dispatch:
+
+```bash
+node "$SKILL_DIR/scripts/run.mjs" router outbox --repo "$TARGET_REPO" status --limit 50
+node "$SKILL_DIR/scripts/run.mjs" router outbox --repo "$TARGET_REPO" flush --limit 20
+node "$SKILL_DIR/scripts/run.mjs" router outbox --repo "$TARGET_REPO" retry --id out_abc123
+```
+
+Each delivery has a stable idempotency key embedded in its message marker.
+GitHub and Jira are checked for the marker before posting. `2xx` is success,
+`429` uses `Retry-After` or backoff, `5xx` and network errors retry, and
+authentication/permanent `4xx` errors go to dead-letter. The queue lives in
+`.loop/outbox.json`; it is not a second Ticket state.
 
 ## Independent verification
 
@@ -397,7 +439,8 @@ One tick:
 3. expires leases;
 4. verifies Tickets in `verifying`;
 5. creates newly selected Tickets up to the remaining capacity;
-6. dispatches each queued Ticket at most once.
+6. dispatches each queued Ticket at most once;
+7. enqueues Outbox deliveries for changed terminal/review states.
 
 The third Issue waits for the next tick when `maxConcurrent` is reached. That is
 intentional: the Router never silently exceeds the configured concurrency.

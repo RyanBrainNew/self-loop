@@ -118,7 +118,23 @@ export function runVerifier({
   mkdirSync(join(verifyRoot, '..'), { recursive: true });
 
   const head = ticket.prHead || ticket.branch || 'HEAD';
-  gitOrThrow(repoRoot, ['worktree', 'add', '--detach', verifyRoot, head]);
+  try {
+    gitOrThrow(repoRoot, ['worktree', 'add', '--detach', verifyRoot, head]);
+  } catch (error) {
+    const reason = `could not create verification worktree at ${head}: ${error.message}`;
+    writeEvidence(evidencePath, {
+      at: new Date(now).toISOString(),
+      command: null,
+      status: 'human_review',
+      reason,
+    });
+    return {
+      status: 'human_review',
+      evidencePath,
+      checks: [],
+      reason,
+    };
+  }
 
   const checks = [];
   let failed = false;
