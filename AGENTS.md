@@ -15,8 +15,8 @@ the `package.json` license field in sync.
 - `references/` - workflow, memory, and policy documentation.
 - `templates/memory/` - generic project memory templates.
 - `adapters/orca/` - optional Orca setup, prompts, and precheck.
-- `server/` - local-first Router console: HTTP API, JSON state, demo seed, and
-  the dependency-free web UI.
+- `server/` - local-first Router console: HTTP API, demo seed, project-state
+  adapter, local write auth, and the dependency-free web UI.
 - `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
 
@@ -26,6 +26,11 @@ the `package.json` license field in sync.
 - Core scripts must not import `server/`; the console is an optional caller.
 - The console binds to localhost by default and must not be exposed publicly
   without authentication.
+- Console writes require the local token or same-origin session; cross-site
+  requests are rejected. The token must never enter a URL, read API, or SSE.
+- Project-mode console reads `.loop/state.json` / `.loop/inbox.json` and must
+  delegate state mutations to `scripts/router.mjs` under the same lock. It must
+  not keep a second writable Ticket state.
 - Core scripts must not assume the current directory or a project-local `loop/`
   directory. Accept `--repo`, then `SELF_LOOP_REPO`, then legacy `LOOP_REPO`.
 - All git operations, output, and memory paths stay inside the target repo.
@@ -52,6 +57,7 @@ npm test
 node --test scripts/self-loop.test.mjs
 node --test server/server.test.mjs
 npm run serve
+npm run serve:project -- /path/to/project
 node scripts/setup-project.mjs --repo /path/to/project --dry-run
 node scripts/init-memory.mjs --repo /path/to/project --dry-run
 node scripts/run.mjs router status --repo /path/to/project --json

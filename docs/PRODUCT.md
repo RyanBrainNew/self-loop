@@ -94,10 +94,29 @@ Outbox 负责把执行结果送回外部系统，例如：
 ### 当前：local-first 单租户
 
 - Node 20+，无前端构建步骤；
-- 状态落在 `.self-loop/state.json`；
+- demo 模式状态落在 `.self-loop/state.json`；
+- 项目模式直接读取目标仓库 `.loop/state.json` 与 `.loop/inbox.json`，不复制
+  Ticket 状态；
 - 默认只绑定 `127.0.0.1`；
-- 没有鉴权，不面向公网；
+- 首次启动生成仅当前用户可读的本地 write token；浏览器使用同源 HttpOnly
+  会话，CLI 使用 Bearer token；
+- 所有写接口和跨站读写都校验 Origin；
 - 适合本机演示、单项目控制和验证产品形态。
+
+### local console 与 hosted console 的差异
+
+| 维度 | local console（当前） | hosted console（未实现） |
+| --- | --- | --- |
+| 身份 | 本地 token + 同源会话 | 用户、团队、SSO |
+| 权限 | 本机即管理员 | RBAC、项目级权限 |
+| 状态 | 目标仓库 `.loop` 或 demo JSON | 数据库、迁移、多进程锁 |
+| 项目 | 启动参数 allowlist，可在 UI 切换 | 组织 / 项目注册与隔离 |
+| 网络 | 默认 loopback，禁止直接公网暴露 | TLS、反向代理、限流 |
+| 审计 | 本地控制台审计 + Router 状态 | 集中审计、保留策略、告警 |
+| Outbox | demo 有队列；项目模式暂未持久化 | 多通道投递、死信与重放 |
+
+hosted 版本不是把当前 server 直接放到公网，而是新的数据模型和权限模型，需要
+独立 ADR。
 
 ### 后续：hosted / 团队版
 
@@ -105,7 +124,7 @@ Outbox 负责把执行结果送回外部系统，例如：
 
 - 数据库、迁移和多进程锁；
 - 用户、团队、项目和 RBAC；
-- 连接器 OAuth、webhook 验签和密钥管理；
+- 连接器 OAuth、webhook 密钥托管与轮换；
 - 多租户隔离、审计和可观测性；
 - 托管 Worker 或远程 Worker 注册协议。
 
@@ -113,20 +132,22 @@ Outbox 负责把执行结果送回外部系统，例如：
 
 MVP 中以下能力是真实的：
 
-- 事件去重、消费和 Inbox 状态；
-- Ticket 创建、领取、lease、重试和阻塞；
-- Attempt 生命周期和人工回答；
-- Outbox 重试、死信和人工重投；
-- Source / Worker 开关和审计记录；
-- SSE 实时刷新和 HTTP API。
+- demo Router 的事件去重、消费和 Inbox 状态；
+- 项目模式读取真实 `.loop` Ticket、Attempt、证据和 Inbox；
+- 项目模式的 tick / recover 通过同一个 Router 锁边界执行；
+- demo 模式的 Ticket 生命周期、人工回答、Outbox 重试和死信；
+- Source / Worker 开关和审计记录（demo）；
+- 本地 write token、同源会话、Origin 校验、轮换和写审计；
+- SSE 实时刷新和 HTTP API；
 - GitHub webhook 原始报文验签、delivery 去重和 issue 事件归一化。
 
 以下能力目前是模拟的：
 
-- Worker 真实执行 agent 任务；
-- Verifier 在真实 worktree 中复跑项目门禁；
+- demo 模式的 Worker 执行是定时器，不是 agent；
+- demo 模式的 Verifier 证据是合成的；
 - Jira / Slack 的 OAuth、事件接入和外部写回；
-- GitHub API 轮询、OAuth 和出站评论写回。
+- 项目模式 Outbox 历史尚未由核心 Router 持久化；
+- GitHub API 轮询、OAuth 和出站评论写回（项目模式由 Router 自己负责评论）。
 
 ## 产品边界
 
@@ -141,4 +162,6 @@ MVP 中以下能力是真实的：
 
 - [Web console MVP](../server/README.md)
 - [Local web console ADR](adr/0007-local-web-console.md)
+- [Console reads project Router ADR](adr/0008-console-reads-project-router.md)
+- [Local write token ADR](adr/0009-local-write-token.md)
 - [Router protocol](../references/ROUTER.md)

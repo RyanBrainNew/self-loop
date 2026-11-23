@@ -36,16 +36,30 @@ Ticket → Attempt → Verifier → Outbox 的链路可视化，并允许人工�
 重跑、取消、验收和重投。
 
 ```bash
+# 演示模式：合成 Router，第一次启动就有完整数据
 npm run serve
 # http://127.0.0.1:4317
+
+# 项目模式：读取目标仓库真实的 .loop/state.json
+npm run serve:project -- /path/to/project
+
+# 多个项目可在控制台左上角切换
+npm run serve:project -- /path/to/project-a /path/to/project-b
 ```
 
-首次启动会写入演示数据；状态保存在 `.self-loop/state.json`，该目录已被
-gitignore。MVP 只绑定本机、没有鉴权，不要暴露到公网。
+演示模式的状态保存在 `.self-loop/state.json`，该目录已被 gitignore。项目模式
+不复制 Ticket 状态：控制台只读 `.loop/state.json` 与 `.loop/inbox.json`，写操作
+通过同一个 `scripts/router.mjs` 锁边界执行，Router 仍是 Ticket 状态的唯一写入者。
 
-连接器配置、事件注入、Ticket 生命周期和 Outbox 重试是真实的；Worker
-执行与 Verifier 证据目前是定时模拟，真实 OAuth、webhook 验签和外部 API
-调用在下一版接入。详见 `server/README.md`。
+控制台默认只绑定 `127.0.0.1`。首次启动会在
+`~/.self-loop/console-token` 生成本地 write token；浏览器通过同源 HttpOnly
+会话写操作，CLI 使用 `Authorization: Bearer <token>`。所有写接口校验 Origin，
+跨站读写和 SSE 都会被拒绝。不要在没有认证反向代理的情况下暴露到公网。
+
+连接器配置、事件注入、Ticket 生命周期和 Outbox 重试是真实的；GitHub
+webhook 原始报文验签和 delivery 去重已经接入。demo 模式的 Worker 执行与
+Verifier 证据仍是定时模拟；真实 executor、Jira/Slack OAuth 和外部 API 写回
+在后续 issue 中推进。详见 `server/README.md`。
 
 ## 官网
 
@@ -347,9 +361,9 @@ CI 在 push 和 PR 上运行 `node --test`。测试覆盖策略/标签/选择、
 Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、inbox 幂等与结果事件、`maxConcurrent` 并发上限、`router status` 的 `--repo` 冒烟，以及只复制 skill 根目录后的独立运行。
 
 服务端控制台另外覆盖事件去重、Ticket/Attempt 生命周期、人工回答、Outbox
-重试、GitHub webhook 验签与幂等、secret 脱敏、连接器与 Worker 开关，以及
-HTTP API。当前测试基线：`70` 个测试全部
-通过（Node 20+）。
+重试、GitHub webhook 验签与幂等、secret 脱敏、连接器与 Worker 开关、
+本地 token / Origin 防护、项目模式 Router 委派，以及 HTTP API。当前测试
+基线：`75` 个测试全部通过（Node 20+）。
 
 ## 设计文档
 

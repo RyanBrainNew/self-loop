@@ -13,6 +13,8 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
+const UNSAFE_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+
 const OPEN_STATES = new Set([
   'queued',
   'claimed',
@@ -23,19 +25,28 @@ const OPEN_STATES = new Set([
   'failed',
 ]);
 
-function sendJson(res, status, body) {
+function securityHeaders() {
+  return {
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'Cache-Control': 'no-store',
+  };
+}
+
+function sendJson(res, status, body, headers = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*',
+    ...securityHeaders(),
+    ...headers,
   });
   res.end(JSON.stringify(body));
 }
 
-function sendText(res, status, body, type = 'text/plain; charset=utf-8') {
+function sendText(res, status, body, type = 'text/plain; charset=utf-8', headers = {}) {
   res.writeHead(status, {
     'Content-Type': type,
-    'Cache-Control': 'no-store',
+    ...securityHeaders(),
+    ...headers,
   });
   res.end(body);
 }
@@ -119,13 +130,15 @@ function parseLimit(value, fallback = 200) {
   return Math.min(parsed, 1000);
 }
 
-export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
+export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }) {
   const clients = new Set();
   const publicRoot = resolve(publicDir);
 
   function publicSnapshot() {
-    const snapshot = store.snapshot();
-    snapshot.sources = snapshot.sources.map(redactSource);
+    const snapshot = backend.snapshot();
+    snapshot.sources = (snapshot.sources || []).map(redactSource);
+    snapshot.capabilities = backend.capabilities;
+    snapshot.projects = snapshot.projects || backend.projects();
     return snapshot;
   }
 
@@ -141,6 +154,19 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     }
   }
 
+  function record(req, authorization, action, detail, ok = true) {
+    audit.record({
+      actor: authorization?.actor || 'anonymous',
+      source: authorization?.source || 'direct',
+      ip: authorization?.ip || req.socket?.remoteAddress || 'local',
+      via: authorization?.via || 'none',
+      action,
+      project: backend.projects().currentId,
+      detail,
+      ok,
+    });
+  }
+
   function serveStatic(req, res, pathname) {
     const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
     const file = resolve(publicRoot, relative);
@@ -151,9 +177,16 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
       return sendText(res, 404, 'not found');
     }
     const type = MIME[extname(file)] || 'application/octet-stream';
+    const headers = { 'Cache-Control': 'no-store' };
+    if (type.startsWith('text/html')) {
+      headers['Set-Cookie'] = auth.sessionCookie();
+      headers['Content-Security-Policy'] =
+        "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'";
+    }
     res.writeHead(200, {
       'Content-Type': type,
-      'Cache-Control': 'no-store',
+      ...securityHeaders(),
+      ...headers,
     });
     res.end(readFileSync(file));
   }
@@ -163,7 +196,7 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
+      'X-Content-Type-Options': 'nosniff',
     });
     res.write(': connected\n\n');
     res.write(`event: state\ndata: ${JSON.stringify(publicSnapshot())}\n\n`);
@@ -187,6 +220,9 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     const delivery = req.headers['x-github-delivery'];
     const signature = req.headers['x-hub-signature-256'];
 
+    if (req.headers.origin && !auth.sameOrigin(req)) {
+      return sendJson(res, 403, { error: 'cross-site request rejected' });
+    }
     if (typeof delivery !== 'string' || !delivery || delivery.length > 200) {
       return sendJson(res, 400, { error: 'missing or invalid X-GitHub-Delivery' });
     }
@@ -203,9 +239,33 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     }
 
     const repository = payload?.repository?.full_name || '';
-    const source = findGitHubSource(store.state.sources, repository);
+    const snapshot = backend.snapshot();
+    const source = backend.mode === 'project'
+      ? {
+          id: 'src_github',
+          name: 'GitHub Issues',
+          kind: 'github',
+          status: 'healthy',
+          config: {
+            repo: snapshot.config.project.repo,
+            webhookSecret:
+              process.env.SELF_LOOP_GITHUB_WEBHOOK_SECRET
+              || process.env.GITHUB_WEBHOOK_SECRET
+              || '',
+          },
+        }
+      : findGitHubSource(snapshot.sources, repository);
     if (!source) {
       return sendJson(res, 503, { error: 'no GitHub source configured' });
+    }
+    if (!source.config?.repo) {
+      return sendJson(res, 503, { error: 'GitHub repository is not configured' });
+    }
+    if (
+      repository
+      && String(source.config.repo).toLowerCase() !== repository.toLowerCase()
+    ) {
+      return sendJson(res, 503, { error: 'GitHub repository does not match the configured source' });
     }
 
     const secret = source.config?.webhookSecret || source.config?.secret;
@@ -217,14 +277,44 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     }
 
     const { eventInput, ignoredReason } = normalizeGitHubEvent(eventName, payload);
+    const dedupeKey = `${source.id}:github:${delivery}`;
     let result;
     try {
-      result = engine.ingestEvent({
-        ...eventInput,
-        sourceId: source.id,
-        dedupeKey: `${source.id}:github:${delivery}`,
-        ignoredReason,
-      });
+      if (backend.mode === 'project') {
+        const ticket = Number(eventInput.externalId?.replace(/\D/g, '')) || null;
+        const posted = await backend.runRouter([
+          'post',
+          '--type',
+          eventName === 'pull_request' ? 'pull_request' : 'issue',
+          ...(ticket ? ['--ticket', String(ticket)] : []),
+          '--action',
+          String(payload.action || ''),
+          '--id',
+          dedupeKey,
+          '--data',
+          JSON.stringify(payload),
+        ]);
+        let duplicate = false;
+        try {
+          duplicate = Boolean(JSON.parse(posted.stdout).duplicate);
+        } catch {}
+        result = {
+          duplicate,
+          event: {
+            id: dedupeKey,
+            kind: eventInput.kind,
+            status: ignoredReason ? 'ignored' : 'pending',
+            ignoredReason,
+          },
+        };
+      } else {
+        result = backend.ingestEvent({
+          ...eventInput,
+          sourceId: source.id,
+          dedupeKey,
+          ignoredReason,
+        });
+      }
     } catch (error) {
       if (String(error?.message || '').startsWith('source is paused:')) {
         return sendJson(res, 409, { error: error.message });
@@ -245,32 +335,55 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     });
   }
 
+  function requireCapability(name, label) {
+    if (backend.capabilities[name]) return;
+    backend.unsupported(label);
+  }
+
   async function handleApi(req, res, url) {
     const path = url.pathname;
     const method = req.method || 'GET';
 
     if (method === 'OPTIONS') {
+      if (!auth.sameOrigin(req)) {
+        return sendJson(res, 403, { error: 'cross-site request rejected' });
+      }
       res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        Allow: 'GET,POST,PATCH,OPTIONS',
+        ...securityHeaders(),
       });
       return res.end();
     }
 
+    if (!auth.sameOrigin(req)) {
+      record(req, null, 'request.rejected', `cross-site ${method} ${path}`, false);
+      return sendJson(res, 403, { error: 'cross-site request rejected' });
+    }
+
+    let authorization = null;
+    if (UNSAFE_METHODS.has(method)) {
+      authorization = auth.authorize(req);
+      if (!authorization.ok) {
+        record(req, null, 'auth.rejected', `${method} ${path}`, false);
+        return sendJson(res, authorization.status || 401, { error: authorization.reason });
+      }
+    }
+
     if (path === '/api/health' && method === 'GET') {
+      const projects = backend.projects();
       return sendJson(res, 200, {
         ok: true,
         version,
-        mode: store.state.meta.demo ? 'demo' : 'live',
+        mode: backend.mode,
         running: true,
+        project: projects.currentId,
+        auth: {
+          writeProtected: true,
+          tokenFile: auth.file,
+        },
         uptimeSeconds: Math.max(
           0,
-          Math.round(
-            (Date.now() -
-              Date.parse(store.state.meta.serverStartedAt || store.state.meta.startedAt)) /
-              1000,
-          ),
+          Math.round((Date.now() - Date.parse(backend.snapshot().meta.serverStartedAt || Date.now())) / 1000),
         ),
       });
     }
@@ -284,36 +397,72 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     }
 
     if (path === '/api/overview' && method === 'GET') {
-      const overview = engine.overview();
-      overview.sources = overview.sources.map(redactSource);
+      const overview = backend.overview();
+      overview.sources = (overview.sources || []).map(redactSource);
+      overview.capabilities = backend.capabilities;
+      overview.projects = overview.projects || backend.projects();
       return sendJson(res, 200, overview);
     }
 
+    if (path === '/api/projects' && method === 'GET') {
+      return sendJson(res, 200, backend.projects());
+    }
+
+    if (path === '/api/projects/select' && method === 'POST') {
+      requireCapability('projectSelect', '选择项目');
+      const body = await readBody(req);
+      const result = backend.selectProject(body.id);
+      record(req, authorization, 'project.selected', `project=${body.id}`);
+      broadcast();
+      return sendJson(res, 200, result);
+    }
+
+    if (path === '/api/auth/rotate' && method === 'POST') {
+      requireCapability('authRotate', '轮换 token');
+      const result = auth.rotate();
+      record(req, authorization, 'auth.rotated', 'write token rotated');
+      res.setHeader('Set-Cookie', auth.sessionCookie());
+      return sendJson(res, 200, {
+        ok: true,
+        tokenFile: result.file,
+        token: result.token,
+      });
+    }
+
     if (path === '/api/tick' && method === 'POST') {
-      const result = engine.tick();
+      requireCapability('tick', '运行 tick');
+      const result = await backend.tick();
+      record(req, authorization, 'router.tick', `mode=${backend.mode}`);
       broadcast();
       return sendJson(res, 200, result);
     }
 
     if (path === '/api/config' && method === 'GET') {
+      const snapshot = backend.snapshot();
       return sendJson(res, 200, {
-        config: store.state.config,
+        config: snapshot.config,
         meta: {
-          paused: store.state.meta.paused,
-          demo: store.state.meta.demo,
+          paused: snapshot.meta.paused,
+          demo: snapshot.meta.demo,
+          mode: backend.mode,
         },
+        capabilities: backend.capabilities,
       });
     }
 
     if (path === '/api/config' && method === 'PATCH') {
+      requireCapability('configWrite', '修改运行参数');
       const patch = await readBody(req);
-      const config = engine.updateConfig(patch);
+      const config = backend.updateConfig(patch);
+      record(req, authorization, 'config.updated', JSON.stringify(patch));
       broadcast();
+      const snapshot = backend.snapshot();
       return sendJson(res, 200, {
         config,
         meta: {
-          paused: store.state.meta.paused,
-          demo: store.state.meta.demo,
+          paused: snapshot.meta.paused,
+          demo: snapshot.meta.demo,
+          mode: backend.mode,
         },
       });
     }
@@ -323,23 +472,29 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     }
 
     if (path === '/api/sources' && method === 'POST') {
+      requireCapability('sourceWrite', '新增连接器');
       const body = await readBody(req);
-      const source = engine.addSource(body);
+      const source = backend.addSource(body);
+      record(req, authorization, 'source.created', source.name);
       broadcast();
       return sendJson(res, 201, { source: redactSource(source) });
     }
 
     const sourceDetail = path.match(/^\/api\/sources\/([^/]+)$/);
     if (sourceDetail && method === 'PATCH') {
+      requireCapability('sourceWrite', '修改连接器');
       const body = await readBody(req);
-      const source = engine.updateSource(decodeURIComponent(sourceDetail[1]), body);
+      const source = backend.updateSource(decodeURIComponent(sourceDetail[1]), body);
+      record(req, authorization, 'source.updated', source.name);
       broadcast();
       return sendJson(res, 200, { source: redactSource(source) });
     }
 
     const sourceToggle = path.match(/^\/api\/sources\/([^/]+)\/toggle$/);
     if (sourceToggle && method === 'POST') {
-      const source = engine.toggleSource(decodeURIComponent(sourceToggle[1]));
+      requireCapability('sourceWrite', '暂停连接器');
+      const source = backend.toggleSource(decodeURIComponent(sourceToggle[1]));
+      record(req, authorization, 'source.toggled', source.name);
       broadcast();
       return sendJson(res, 200, { source: redactSource(source) });
     }
@@ -347,7 +502,7 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     if (path === '/api/events' && method === 'GET') {
       const status = url.searchParams.get('status');
       const limit = parseLimit(url.searchParams.get('limit'));
-      const events = store.state.events
+      const events = [...(publicSnapshot().events || [])]
         .filter((event) => !status || event.status === status)
         .sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt))
         .slice(0, limit);
@@ -355,22 +510,24 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     }
 
     if (path === '/api/events' && method === 'POST') {
+      requireCapability('injectEvent', '注入事件');
       const body = await readBody(req);
-      const result = engine.ingestEvent(body);
+      const result = backend.ingestEvent({ ...body, actor: authorization.actor });
+      record(req, authorization, 'event.injected', result.event?.title || '');
       broadcast();
       return sendJson(res, result.duplicate ? 200 : 201, result);
     }
 
     if (path === '/api/tickets' && method === 'GET') {
-      const state = url.searchParams.get('state');
+      const stateFilter = url.searchParams.get('state');
       const limit = parseLimit(url.searchParams.get('limit'));
-      const tickets = store.state.tickets
+      const tickets = (publicSnapshot().tickets || [])
         .filter((ticket) => {
-          if (!state || state === 'all') return true;
-          if (state === 'active') return OPEN_STATES.has(ticket.state);
-          if (state === 'blocked') return ['blocked', 'failed'].includes(ticket.state);
-          if (state === 'done') return ['done', 'dropped'].includes(ticket.state);
-          return ticket.state === state;
+          if (!stateFilter || stateFilter === 'all') return true;
+          if (stateFilter === 'active') return OPEN_STATES.has(ticket.state);
+          if (stateFilter === 'blocked') return ['blocked', 'failed'].includes(ticket.state);
+          if (stateFilter === 'done') return ['done', 'dropped'].includes(ticket.state);
+          return ticket.state === stateFilter;
         })
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
         .slice(0, limit);
@@ -384,53 +541,80 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
       const id = decodeURIComponent(ticketAction[1]);
       const action = ticketAction[2];
       const body = await readBody(req);
-      let ticket;
-      if (action === 'answer') ticket = engine.answerTicket(id, body.answer);
-      if (action === 'retry') ticket = engine.retryTicket(id);
-      if (action === 'cancel') ticket = engine.cancelTicket(id);
-      if (action === 'approve') ticket = engine.approveTicket(id);
+      let result;
+      if (action === 'answer') {
+        requireCapability('ticketAnswer', '回答 Ticket');
+        result = backend.answerTicket(id, body.answer, authorization.actor);
+      }
+      if (action === 'retry') {
+        requireCapability('ticketRetry', '重跑 Ticket');
+        result = await backend.retryTicket(id, authorization.actor);
+      }
+      if (action === 'cancel') {
+        requireCapability('ticketCancel', '取消 Ticket');
+        result = backend.cancelTicket(id, authorization.actor);
+      }
+      if (action === 'approve') {
+        requireCapability('ticketApprove', '验收 Ticket');
+        result = backend.approveTicket(id, authorization.actor);
+      }
+      record(req, authorization, `ticket.${action}`, `ticket=${id}`);
       broadcast();
-      return sendJson(res, 200, { ticket });
+      return sendJson(res, 200, {
+        ticket: result?.ticket || result,
+        result,
+      });
     }
 
     const ticketDetail = path.match(/^\/api\/tickets\/([^/]+)$/);
     if (ticketDetail && method === 'GET') {
-      const detail = engine.ticketDetail(decodeURIComponent(ticketDetail[1]));
+      const detail = backend.ticketDetail(decodeURIComponent(ticketDetail[1]));
       if (!detail) return sendJson(res, 404, { error: 'ticket not found' });
       return sendJson(res, 200, detail);
     }
 
     if (path === '/api/outbox' && method === 'GET') {
-      const state = url.searchParams.get('state');
+      const stateFilter = url.searchParams.get('state');
       const limit = parseLimit(url.searchParams.get('limit'));
-      const deliveries = store.state.deliveries
-        .filter((delivery) => !state || state === 'all' || delivery.state === state)
+      const deliveries = (publicSnapshot().deliveries || [])
+        .filter((delivery) => !stateFilter || stateFilter === 'all' || delivery.state === stateFilter)
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
         .slice(0, limit);
-      return sendJson(res, 200, { deliveries });
+      return sendJson(res, 200, { deliveries, capabilities: backend.capabilities });
     }
 
     const deliveryReplay = path.match(/^\/api\/outbox\/([^/]+)\/replay$/);
     if (deliveryReplay && method === 'POST') {
-      const delivery = engine.replayDelivery(decodeURIComponent(deliveryReplay[1]));
+      requireCapability('outbox', '重投消息');
+      const delivery = backend.replayDelivery(
+        decodeURIComponent(deliveryReplay[1]),
+        authorization.actor,
+      );
+      record(req, authorization, 'delivery.replayed', `delivery=${deliveryReplay[1]}`);
       broadcast();
       return sendJson(res, 200, { delivery });
     }
 
     if (path === '/api/workers' && method === 'GET') {
-      return sendJson(res, 200, { workers: store.state.workers });
+      return sendJson(res, 200, { workers: publicSnapshot().workers || [] });
     }
 
     const workerToggle = path.match(/^\/api\/workers\/([^/]+)\/toggle$/);
     if (workerToggle && method === 'POST') {
-      const worker = engine.toggleWorker(decodeURIComponent(workerToggle[1]));
+      requireCapability('workerWrite', '暂停 Worker');
+      const worker = backend.toggleWorker(decodeURIComponent(workerToggle[1]));
+      record(req, authorization, 'worker.toggled', worker.name);
       broadcast();
       return sendJson(res, 200, { worker });
     }
 
     if (path === '/api/audit' && method === 'GET') {
       const limit = parseLimit(url.searchParams.get('limit'), 100);
-      return sendJson(res, 200, { audit: store.state.audit.slice(0, limit) });
+      const snapshot = publicSnapshot();
+      return sendJson(res, 200, {
+        audit: (snapshot.audit || []).slice(0, limit),
+        consoleAudit: audit.list(limit),
+      });
     }
 
     return sendJson(res, 404, { error: 'not found' });
@@ -452,7 +636,8 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
         return;
       }
       const message = error?.message || 'internal error';
-      const status = message === 'body too large' ? 413 : message === 'invalid JSON body' ? 400 : 400;
+      const status = error?.statusCode
+        || (message === 'body too large' ? 413 : message === 'invalid JSON body' ? 400 : 400);
       sendJson(res, status, { error: message });
     }
   }

@@ -13,6 +13,8 @@
     "test:skill": "node --test scripts/self-loop.test.mjs",
     "test:server": "node --test server/server.test.mjs",
     "serve": "node server/index.mjs",
+    "serve:project": "node server/index.mjs --repo",
+    "rotate-token": "node server/index.mjs --rotate-token",
     "setup": "node scripts/setup-project.mjs",
     "init-memory": "node scripts/init-memory.mjs"
   }
