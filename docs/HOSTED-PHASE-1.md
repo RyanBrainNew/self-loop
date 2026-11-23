@@ -7,6 +7,9 @@ expose publicly.
 ## Implemented
 
 - `server/hosted-rbac.mjs`: default-deny tenant/project authorization.
+- `server/hosted-oidc.mjs`: OIDC discovery, PKCE, authorization-code exchange,
+  RS256/ES256 ID Token verification against JWKS, issuer/audience/expiry/nonce
+  checks, and token fingerprints.
 - Roles: `owner`, `maintainer`, `operator`, `viewer`.
 - Permissions: tenant read/manage, project read/write, ticket read/operate/
   approve, source/worker/automation/outbox management, audit, and secrets.
@@ -19,8 +22,8 @@ expose publicly.
 
 ## Not implemented
 
-- OIDC discovery, authorization-code + PKCE login, callback/session cookies,
-  and provider logout.
+- Callback route, server-side session cookies, CSRF/state storage, and provider
+  logout.
 - A hosted HTTP server that wires RBAC into every route.
 - A PostgreSQL adapter and transaction/lease implementation.
 - KMS/Secret Manager, OAuth token refresh/revocation, and tenant-scoped email
@@ -39,7 +42,7 @@ expose publicly.
 
 ## Next slice
 
-1. Add OIDC discovery + PKCE login and a server-side session store.
+1. Add the OIDC callback route and a server-side session store.
 2. Implement the PostgreSQL adapter with `SET LOCAL self_loop.tenant_id`.
 3. Wire route handlers through `authorize()` before any read or mutation.
 4. Add a local -> hosted export/import dry run.

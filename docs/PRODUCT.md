@@ -160,7 +160,8 @@ MVP 中以下能力是真实的：
 - GitHub PR 评论 `/loop` / `@self-loop` 生成带 PR 链接的 follow-up Ticket；
 - Playwright 浏览器 E2E、axe WCAG 2 A/AA 扫描和主题/项目切换测试；
 - Orca adapter 真实 create/list/show/remove automation 探针；
-- hosted RBAC 契约、trusted-proxy OIDC header 解析和 PostgreSQL/RLS schema；
+- hosted RBAC 契约、OIDC discovery/PKCE/JWT 校验、trusted-proxy header 和
+  PostgreSQL/RLS schema；
 - 四套主题和中英文对照界面（Glossary 术语表）。
 
 以下能力目前是模拟的：

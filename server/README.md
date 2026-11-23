@@ -314,7 +314,9 @@ and the glossary. See `tests/console/`.
 
 The local console is still local-first. `server/hosted-rbac.mjs` defines the
 default-deny tenant/project role matrix for the future hosted service, and
-`migrations/001_hosted.sql` defines PostgreSQL tables, idempotency constraints,
+`server/hosted-oidc.mjs` provides discovery, PKCE, code exchange, and
+RS256/ES256 ID Token/JWKS validation. `migrations/001_hosted.sql` defines
+PostgreSQL tables, idempotency constraints,
 optimistic versions, indexes, and tenant-isolation RLS policies. See
 [`docs/HOSTED-PHASE-1.md`](../docs/HOSTED-PHASE-1.md) for what is implemented
 versus still deferred.

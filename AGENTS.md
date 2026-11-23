@@ -20,8 +20,9 @@ the `package.json` license field in sync.
 - `server/` - local-first Router console: HTTP API, demo seed, project-state
   adapter, persistent multi-repo registry (`project-store.mjs`), local write
   auth, Slack/Jira connector adapters, observability, and the dependency-free
-  bilingual web UI. `hosted-rbac.mjs` is the tested hosted authorization
-  contract; `migrations/` contains the PostgreSQL/RLS schema.
+  bilingual web UI. `hosted-rbac.mjs` and `hosted-oidc.mjs` are the tested
+  hosted authorization/OIDC contracts; `migrations/` contains the
+  PostgreSQL/RLS schema.
 - `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
 - `tests/console/` - Playwright browser E2E and axe accessibility checks.

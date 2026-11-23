@@ -431,7 +431,7 @@ Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽�
 服务端控制台另外覆盖事件去重、Ticket/Attempt 生命周期、人工回答、Outbox
 重试、GitHub webhook 验签与幂等、secret 脱敏、连接器与 Worker 开关、
 本地 token / Origin 防护、项目模式 Router 委派，以及 HTTP API。当前测试
-基线：`112` 个测试全部通过（Node 20+）；另有 15 个 Playwright 浏览器测试。
+基线：`115` 个测试全部通过（Node 20+）；另有 15 个 Playwright 浏览器测试。
 
 ## 设计文档
 

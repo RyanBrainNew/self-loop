@@ -13,6 +13,8 @@
 - Added the first hosted-control-plane contract: tenant/project RBAC,
   trusted-proxy identity parsing, PostgreSQL schema, idempotency constraints,
   indexes, and RLS policies.
+- Added dependency-free OIDC discovery, PKCE, authorization-code exchange, and
+  RS256/ES256 ID Token verification against JWKS.
 
 ## 0.5.0
 

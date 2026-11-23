@@ -37,7 +37,7 @@ Date: 2026-11-23
 
 ```text
 npm test
-112 tests passed (Node 24 local, Node 20 compatible CI matrix)
+115 tests passed (Node 24 local, Node 20 compatible CI matrix)
 
 npm run test:e2e:console
 15 Playwright tests passed (Chromium, WCAG 2 A/AA axe scan)
