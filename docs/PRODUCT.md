@@ -119,12 +119,14 @@ MVP 中以下能力是真实的：
 - Outbox 重试、死信和人工重投；
 - Source / Worker 开关和审计记录；
 - SSE 实时刷新和 HTTP API。
+- GitHub webhook 原始报文验签、delivery 去重和 issue 事件归一化。
 
 以下能力目前是模拟的：
 
 - Worker 真实执行 agent 任务；
 - Verifier 在真实 worktree 中复跑项目门禁；
-- GitHub / Jira / Slack 的真实 OAuth、webhook 验签和外部写回。
+- Jira / Slack 的 OAuth、事件接入和外部写回；
+- GitHub API 轮询、OAuth 和出站评论写回。
 
 ## 产品边界
 

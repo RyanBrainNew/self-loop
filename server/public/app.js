@@ -1034,8 +1034,8 @@ function sourcesView() {
     <div class="card" style="margin-top:14px;border-color:rgba(245,158,11,.25);background:rgba(245,158,11,.05)">
       <div class="card-title">MVP 边界</div>
       <p class="card-sub" style="font-size:11.5px;line-height:1.65;margin:6px 0 0">
-        这一版把连接器、Inbox、Router、Worker、Verifier、Outbox 串起来。OAuth、真实 webhook 验签、外部 API 限流还没接。
-        先用「注入事件」验证信息架构，再接真实来源。
+        这一版把连接器、Inbox、Router、Worker、Verifier、Outbox 串起来。GitHub
+        webhook 验签已接入；Jira / Slack OAuth、外部 API 限流和出站写回还没接。
       </p>
     </div>
   `;

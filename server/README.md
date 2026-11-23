@@ -30,6 +30,8 @@ network.
 - Durable event, Ticket, Attempt, Delivery, Worker, and audit state.
 - Deduplication, event consumption, concurrency limits, leases, retries, dead
   letters, and human handoff.
+- GitHub webhook ingress with raw-body HMAC-SHA256 verification and delivery-id
+  deduplication.
 - A live console over Server-Sent Events.
 - Console actions: inject an event, answer a blocked Ticket, retry, cancel,
   approve, replay a delivery, pause the Router, pause a Worker.
@@ -39,8 +41,10 @@ network.
 
 - Worker execution is a timer. No agent runs a real task.
 - Verifier evidence is synthetic. No gate runs against a worktree.
-- Connectors store configuration only. OAuth, webhook signatures, rate limits,
-  and external API writes are not implemented.
+- Jira and Slack connectors store configuration only. OAuth, provider-specific
+  rate limits, and external API writes are not implemented.
+- GitHub API polling and outbound GitHub writes are not implemented. The
+  inbound webhook path is real.
 - The JSON store is single-process. There is no database, multi-tenancy, SSO,
   RBAC, or hosted deployment.
 
@@ -66,11 +70,35 @@ network.
 | `POST` | `/api/workers/:id/toggle` | pause/resume a worker |
 | `GET` | `/api/sources` | connectors |
 | `POST` | `/api/sources` | add a connector config |
+| `PATCH` | `/api/sources/:id` | update connector name or config |
 | `POST` | `/api/sources/:id/toggle` | pause/resume a connector |
+| `POST` | `/hooks/github` | signed GitHub webhook ingress |
 | `GET` | `/api/audit` | audit log |
 | `GET` | `/api/config` | runtime config |
 | `PATCH` | `/api/config` | update runtime config |
 | `POST` | `/api/tick` | run one Router tick |
+
+## GitHub webhook
+
+Configure a GitHub Source with a secret. The API masks the secret in reads but
+stores it in the local JSON state; do not share that state file.
+
+```powershell
+$body = @{ config = @{ webhookSecret = $env:GITHUB_WEBHOOK_SECRET } } | ConvertTo-Json
+Invoke-RestMethod -Method Patch `
+  -Uri http://127.0.0.1:4317/api/sources/src_github `
+  -ContentType application/json -Body $body
+```
+
+Point the GitHub webhook at `http://<local-host>:4317/hooks/github`, content
+type `application/json`, and the same secret. For a remote GitHub repository,
+put a local tunnel in front of the console; do not expose the console directly
+to the public network.
+
+Supported issue actions are `opened`, `reopened`, `labeled`, and `edited`.
+`edited` is visible in Inbox but recorded as ignored because metadata changes
+do not create a new Ticket. Every delivery is deduplicated by
+`X-GitHub-Delivery`.
 
 ## Design boundaries
 

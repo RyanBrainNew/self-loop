@@ -221,11 +221,12 @@ export function createDemoState(now = Date.now()) {
       createdAt: ago(now, 240),
       lastEventAt: ago(now, 2),
       eventCount: 128,
-      health: 'Polling every 60s',
+      health: 'Webhook /hooks/github · polling fallback',
       config: {
         repo: 'RyanBrainNew/self-loop',
         labels: ['ready-for-agent'],
         auth: 'gh cli',
+        webhookPath: '/hooks/github',
       },
     },
     {
