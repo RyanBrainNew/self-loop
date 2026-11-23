@@ -66,6 +66,24 @@ level as aliases. Setup writes the nested form when `--memory-dir` is used.
 ```json
 {
   "executor": {
+    "adapter": "codex",
+    "command": ["codex"],
+    "args": [],
+    "timeoutMinutes": 45,
+    "concurrency": 1,
+    "capabilities": ["issue-to-pr"]
+  },
+  "verifier": {
+    "commands": ["npm test", "npm run lint"]
+  }
+}
+```
+
+The older explicit form remains valid and takes precedence:
+
+```json
+{
+  "executor": {
     "command": ["codex", "exec", "--full-auto"],
     "args": []
   }
@@ -73,7 +91,16 @@ level as aliases. Setup writes the nested form when `--memory-dir` is used.
 ```
 
 `command` may be an array (preferred, no shell) or a command string (run through
-a shell). The Worker also receives:
+a shell). Built-in adapters are `command`, `codex`, and `claude`. A custom adapter
+name is accepted as a generic command adapter; scheduler-specific integrations
+live under `adapters/`. `timeoutMinutes` bounds one Attempt. `concurrency` and
+`capabilities` are descriptive Worker registration fields.
+
+When `adapter: "codex"` or `"claude"` is used with a bare command, the adapter
+supplies a protocol prompt that tells the agent to read `references/WORK.md` and
+write `SELF_LOOP_RESULT`. Explicit `command`/`args` are preserved unchanged.
+
+The Worker also receives:
 
 ```text
 SELF_LOOP_REPO
@@ -81,6 +108,7 @@ SELF_LOOP_TICKET
 SELF_LOOP_TASK_CARD
 SELF_LOOP_CONTEXT
 SELF_LOOP_RESULT
+SELF_LOOP_EXECUTOR_ADAPTER
 ```
 
 ## Router
@@ -126,6 +154,52 @@ No command means `human_review`, never an automatic pass.
 The Verifier runs in a detached clean worktree at the PR head or branch. It
 does not trust the Worker's report.
 
+## Outbox
+
+```json
+{
+  "outbox": {
+    "enabled": true,
+    "maxAttempts": 5,
+    "baseDelayMs": 1000,
+    "maxDelayMs": 60000,
+    "notifyOn": ["awaiting_review", "blocked", "failed", "done"],
+    "adapters": {
+      "github": {
+        "enabled": true,
+        "tokenEnv": "GITHUB_TOKEN"
+      },
+      "jira": {
+        "enabled": true,
+        "baseUrl": "https://example.atlassian.net",
+        "email": "loop@example.com",
+        "tokenEnv": "JIRA_API_TOKEN"
+      },
+      "slack": {
+        "enabled": true,
+        "channel": "#engineering",
+        "botTokenEnv": "SLACK_BOT_TOKEN",
+        "webhookUrlEnv": "SLACK_WEBHOOK_URL"
+      }
+    }
+  }
+}
+```
+
+`enabled` only turns on the queue. A channel is used only when its adapter is
+also enabled. Router tick persists deliveries to `.loop/outbox.json`; it never
+calls the network. Run `router outbox flush` from cron or the console to send.
+GitHub requires a token; Jira uses Basic auth with `email` plus token; Slack uses
+a bot token with `channel`, or an incoming webhook URL.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `outbox.maxAttempts` | `5` | Attempts before dead-letter |
+| `outbox.baseDelayMs` | `1000` | Base exponential retry delay |
+| `outbox.maxDelayMs` | `60000` | Retry cap; 429 `Retry-After` is honoured |
+| `outbox.requestTimeoutMs` | `20000` | Per-request network timeout |
+| `outbox.notifyOn` | Review/Blocked/Failed/Done | Ticket states that enqueue a status delivery |
+
 ## Environment variables
 
 Every applicable `SELF_LOOP_*` variable has a legacy `LOOP_*` fallback.
@@ -158,6 +232,8 @@ Every applicable `SELF_LOOP_*` variable has a legacy `LOOP_*` fallback.
 | Worker context chars | `SELF_LOOP_CONTEXT_WORKER_CHARS` | `LOOP_CONTEXT_WORKER_CHARS` |
 | Verifier commands | `SELF_LOOP_VERIFY_COMMANDS` | - |
 | Verifier timeout | `SELF_LOOP_VERIFY_TIMEOUT_MINUTES` | `LOOP_VERIFY_TIMEOUT_MINUTES` |
+| Executor adapter | `SELF_LOOP_EXECUTOR_ADAPTER` | - |
+| Executor timeout | `SELF_LOOP_EXECUTOR_TIMEOUT_MINUTES` | - |
 
 GitHub also accepts `GITHUB_TOKEN` / `GH_TOKEN`, and `GITHUB_REPOSITORY`.
 

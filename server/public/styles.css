@@ -211,6 +211,18 @@ a {
   font-size: 12px;
 }
 
+.project-manage {
+  display: inline-block;
+  margin-top: 5px;
+  color: var(--cyan);
+  font-size: 9.5px;
+  text-decoration: none;
+}
+
+.project-manage:hover {
+  text-decoration: underline;
+}
+
 .nav {
   display: flex;
   flex-direction: column;
@@ -561,13 +573,13 @@ a {
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
 
 .kpi-grid-4 {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 }
 
 .kpi {
@@ -1199,6 +1211,115 @@ tbody tr:hover {
   margin-top: auto;
 }
 
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.project-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.project-card.current {
+  border-color: rgba(34, 211, 238, 0.36);
+  box-shadow: inset 3px 0 0 rgba(34, 211, 238, 0.72);
+}
+
+.project-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.project-card-icon {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(34, 211, 238, 0.06);
+  color: var(--cyan);
+}
+
+.project-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-card-repo {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9.5px;
+}
+
+.project-path {
+  min-height: 30px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: rgba(8, 12, 24, 0.56);
+  color: var(--muted);
+  font-size: 9.5px;
+  overflow-wrap: anywhere;
+}
+
+.project-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.project-runtime {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9.5px;
+}
+
+.project-runtime span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.project-runtime svg {
+  width: 12px;
+  height: 12px;
+}
+
+.project-error {
+  padding: 8px 9px;
+  border: 1px solid rgba(248, 113, 113, 0.22);
+  border-radius: 7px;
+  background: rgba(248, 113, 113, 0.06);
+  color: var(--red);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.project-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.9fr) minmax(290px, 1fr);
@@ -1549,6 +1670,29 @@ textarea {
 
 .evidence th {
   letter-spacing: 0.08em;
+}
+
+.evidence-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 320px;
+}
+
+.evidence-path span {
+  overflow-wrap: anywhere;
+}
+
+.evidence-path .btn-icon {
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+
+.evidence-subpath {
+  margin-top: 3px;
+  font-size: 9px;
+  overflow-wrap: anywhere;
 }
 
 .attempt {

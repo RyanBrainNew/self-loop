@@ -10,13 +10,14 @@ the `package.json` license field in sync.
 ## Layout
 
 - `scripts/` - scheduler-agnostic core (`setup-project`, `run`, `triage`,
-  `select`, `retro`, `router`, `verifier`, `lib`, `precheck`, `init-memory`,
-  tests).
+  `select`, `retro`, `router`, `verifier`, `outbox`, `executors`, `lib`,
+  `precheck`, `init-memory`, tests).
 - `references/` - workflow, memory, and policy documentation.
 - `templates/memory/` - generic project memory templates.
 - `adapters/orca/` - optional Orca setup, prompts, and precheck.
 - `server/` - local-first Router console: HTTP API, demo seed, project-state
-  adapter, local write auth, and the dependency-free web UI.
+  adapter, persistent multi-repo registry (`project-store.mjs`), local write
+  auth, and the dependency-free web UI.
 - `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
 
@@ -28,9 +29,16 @@ the `package.json` license field in sync.
   without authentication.
 - Console writes require the local token or same-origin session; cross-site
   requests are rejected. The token must never enter a URL, read API, or SSE.
-- Project-mode console reads `.loop/state.json` / `.loop/inbox.json` and must
-  delegate state mutations to `scripts/router.mjs` under the same lock. It must
-  not keep a second writable Ticket state.
+- Project-mode console reads `.loop/state.json` / `.loop/inbox.json` /
+  `.loop/outbox.json` and must delegate state mutations to
+  `scripts/router.mjs` under the same lock. It must not keep a second writable
+  Ticket state.
+- The console project registry persists in `~/.self-loop/projects.json`
+  (`--projects-file` / `SELF_LOOP_CONSOLE_PROJECTS`). One console instance
+  serves many registered repos; it never accepts arbitrary filesystem paths
+  from the API.
+- Router ticks only enqueue Outbox deliveries; outbound network calls happen
+  in `router outbox flush`. Delivery history is durable in `.loop/outbox.json`.
 - Core scripts must not assume the current directory or a project-local `loop/`
   directory. Accept `--repo`, then `SELF_LOOP_REPO`, then legacy `LOOP_REPO`.
 - All git operations, output, and memory paths stay inside the target repo.
@@ -61,6 +69,7 @@ npm run serve:project -- /path/to/project
 node scripts/setup-project.mjs --repo /path/to/project --dry-run
 node scripts/init-memory.mjs --repo /path/to/project --dry-run
 node scripts/run.mjs router status --repo /path/to/project --json
+node scripts/router.mjs outbox flush --repo /path/to/project
 ```
 
 ## Change rules

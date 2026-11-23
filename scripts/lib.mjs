@@ -34,6 +34,7 @@ export const ROUTER_DEFAULTS = Object.freeze({
   routerChars: 2000,
   workerChars: 8000,
   verifierTimeoutMinutes: 30,
+  executorTimeoutMinutes: 45,
 });
 
 export const MATT_ROLES = [
@@ -203,6 +204,29 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
     : {};
   const verifierConfig = config.verifier && typeof config.verifier === 'object' && !Array.isArray(config.verifier)
     ? config.verifier
+    : {};
+  const outboxConfig = config.outbox && typeof config.outbox === 'object' && !Array.isArray(config.outbox)
+    ? config.outbox
+    : {};
+  const outboxAdapters = outboxConfig.adapters
+    && typeof outboxConfig.adapters === 'object'
+    && !Array.isArray(outboxConfig.adapters)
+    ? outboxConfig.adapters
+    : {};
+  const githubOutbox = outboxAdapters.github
+    && typeof outboxAdapters.github === 'object'
+    && !Array.isArray(outboxAdapters.github)
+    ? outboxAdapters.github
+    : {};
+  const jiraOutbox = outboxAdapters.jira
+    && typeof outboxAdapters.jira === 'object'
+    && !Array.isArray(outboxAdapters.jira)
+    ? outboxAdapters.jira
+    : {};
+  const slackOutbox = outboxAdapters.slack
+    && typeof outboxAdapters.slack === 'object'
+    && !Array.isArray(outboxAdapters.slack)
+    ? outboxAdapters.slack
     : {};
 
   const outDir = pathInRepo(
@@ -407,8 +431,34 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
       },
     },
     executor: {
+      adapter: String(
+        overrides.executorAdapter
+          ?? executorConfig.adapter
+          ?? firstEnv(env, ['SELF_LOOP_EXECUTOR_ADAPTER'])
+          ?? '',
+      ),
       command: overrides.executorCommand ?? executorConfig.command ?? env.SELF_LOOP_AGENT ?? env.LOOP_AGENT ?? '',
       args: stringArray(overrides.executorArgs ?? executorConfig.args),
+      capabilities: stringArray(executorConfig.capabilities).length
+        ? stringArray(executorConfig.capabilities)
+        : ['issue-to-pr'],
+      concurrency: positiveInteger(
+        choose(
+          overrides.executorConcurrency,
+          executorConfig.concurrency,
+          ROUTER_DEFAULTS.maxConcurrent,
+        ),
+        'executorConcurrency',
+      ),
+      timeoutMinutes: positiveInteger(
+        choose(
+          overrides.executorTimeoutMinutes,
+          firstEnv(env, ['SELF_LOOP_EXECUTOR_TIMEOUT_MINUTES']),
+          executorConfig.timeoutMinutes,
+          ROUTER_DEFAULTS.executorTimeoutMinutes,
+        ),
+        'executorTimeoutMinutes',
+      ),
     },
     verifier: {
       commands: stringArray(
@@ -426,6 +476,64 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
         ),
         'verifierTimeoutMinutes',
       ),
+    },
+    outbox: {
+      enabled: booleanValue(
+        choose(
+          outboxConfig.enabled,
+          false,
+        ),
+        'outbox.enabled',
+      ),
+      maxAttempts: positiveInteger(
+        choose(outboxConfig.maxAttempts, 5),
+        'outbox.maxAttempts',
+      ),
+      baseDelayMs: positiveInteger(
+        choose(outboxConfig.baseDelayMs, 1000),
+        'outbox.baseDelayMs',
+      ),
+      maxDelayMs: positiveInteger(
+        choose(outboxConfig.maxDelayMs, 60_000),
+        'outbox.maxDelayMs',
+      ),
+      requestTimeoutMs: positiveInteger(
+        choose(outboxConfig.requestTimeoutMs, 20_000),
+        'outbox.requestTimeoutMs',
+      ),
+      notifyOn: stringArray(
+        outboxConfig.notifyOn ?? ['awaiting_review', 'blocked', 'failed', 'done'],
+      ),
+      adapters: {
+        github: {
+          enabled: booleanValue(
+            choose(githubOutbox.enabled, false),
+            'outbox.adapters.github.enabled',
+          ),
+          repo: String(githubOutbox.repo ?? ''),
+          tokenEnv: String(githubOutbox.tokenEnv ?? 'GITHUB_TOKEN'),
+          apiBaseUrl: String(githubOutbox.apiBaseUrl ?? 'https://api.github.com'),
+        },
+        jira: {
+          enabled: booleanValue(
+            choose(jiraOutbox.enabled, false),
+            'outbox.adapters.jira.enabled',
+          ),
+          baseUrl: String(jiraOutbox.baseUrl ?? ''),
+          email: String(jiraOutbox.email ?? ''),
+          tokenEnv: String(jiraOutbox.tokenEnv ?? 'JIRA_API_TOKEN'),
+        },
+        slack: {
+          enabled: booleanValue(
+            choose(slackOutbox.enabled, false),
+            'outbox.adapters.slack.enabled',
+          ),
+          webhookUrlEnv: String(slackOutbox.webhookUrlEnv ?? 'SLACK_WEBHOOK_URL'),
+          botTokenEnv: String(slackOutbox.botTokenEnv ?? 'SLACK_BOT_TOKEN'),
+          channel: String(slackOutbox.channel ?? ''),
+          apiBaseUrl: String(slackOutbox.apiBaseUrl ?? 'https://slack.com/api'),
+        },
+      },
     },
   };
 }

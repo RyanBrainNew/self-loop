@@ -10,7 +10,7 @@ Ticket states.
 | Mode | State source | Writes |
 | --- | --- | --- |
 | **demo** | `.self-loop/state.json` | in-process demo Router |
-| **project** | target repo `.loop/state.json` + `.loop/inbox.json` | delegated to `scripts/router.mjs`, same lock as the CLI |
+| **project** | target repo `.loop/state.json` + `.loop/inbox.json` + `.loop/outbox.json` | delegated to `scripts/router.mjs`, same lock as the CLI |
 
 ## Run
 
@@ -22,22 +22,25 @@ npm run serve
 # Project mode: read the real Router state
 npm run serve:project -- /path/to/project
 
-# Multiple allowlisted projects; switch from the console header
+# Register multiple projects; switch in the Projects page or sidebar
 npm run serve:project -- /path/to/project-a /path/to/project-b
 
 # Project with a custom .loop output directory
 node server/index.mjs --repo /path/to/project --out .loop
 ```
 
-Project mode is startup-selected and allowlisted. The HTTP API never accepts an
-arbitrary filesystem path, so a browser cannot point the console at another
-directory.
+Project mode uses a persistent registry at `~/.self-loop/projects.json`.
+`--repo` registers projects on first use; later starts load the registry even
+without `--repo`. Added projects must be a Git repository or contain
+`.self-loop.json` / `.loop`. The API accepts a path only on an authenticated
+`POST /api/projects`, never on read routes.
 
 Options:
 
 ```bash
 node server/index.mjs --port 4317 --host 127.0.0.1
 node server/index.mjs --repo /path/to/project
+node server/index.mjs --projects-file ~/.self-loop/projects.json
 node server/index.mjs --auth-file ~/.self-loop/console-token
 node server/index.mjs --rotate-token
 node server/index.mjs --data .self-loop/state.json   # demo only
@@ -76,15 +79,18 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 ## Project mode behavior
 
 - `GET` endpoints read the state files on demand; a watcher broadcasts SSE when
-  `state.json` or `inbox.json` changes.
+  `state.json`, `inbox.json`, or `outbox.json` changes.
 - `POST /api/tick` runs `node scripts/router.mjs tick --repo <target>`.
 - `POST /api/tickets/:id/retry` runs `node scripts/router.mjs recover`.
+- `POST /api/tickets/:id/cancel` runs `node scripts/router.mjs cancel`.
+- `POST /api/outbox/flush` runs `node scripts/router.mjs outbox flush`.
+- `POST /api/outbox/:id/replay` runs `node scripts/router.mjs outbox retry`.
 - Demo-only actions return `409`: pause, event injection, source/worker edits,
-  config edits, answer, cancel, approve, and Outbox replay.
+  config edits, answer, and approve.
 - The Router remains the only writer of Ticket state. The console does not
   import core scripts to mutate state directly.
-- Outbox history is not persisted by the core Router yet. Project mode shows an
-  explicit empty state instead of inventing sent/failed records.
+- Outbox history comes from the real `.loop/outbox.json`. Flush is explicit so
+  Router tick never blocks on external APIs.
 
 ## API
 
@@ -97,8 +103,11 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 | `GET` | `/api/state` | full console snapshot |
 | `GET` | `/api/overview` | dashboard counters |
 | `GET` | `/api/stream` | SSE state stream |
-| `GET` | `/api/projects` | allowlisted projects |
+| `GET` | `/api/projects` | registered projects with live health/counts |
+| `POST` | `/api/projects` | register a local project path |
 | `POST` | `/api/projects/select` | switch the active project |
+| `POST` | `/api/projects/:id/select` | switch the active project |
+| `DELETE` | `/api/projects/:id` | remove a project (never the last one) |
 | `POST` | `/api/auth/rotate` | rotate the local write token |
 | `GET` | `/api/events` | inbox events |
 | `POST` | `/api/events` | inject an event (demo only) |
@@ -106,10 +115,11 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 | `GET` | `/api/tickets/:id` | ticket, attempts, deliveries, timeline |
 | `POST` | `/api/tickets/:id/answer` | answer a blocked ticket (demo only) |
 | `POST` | `/api/tickets/:id/retry` | requeue a blocked/failed ticket |
-| `POST` | `/api/tickets/:id/cancel` | drop a ticket (demo only) |
+| `POST` | `/api/tickets/:id/cancel` | stop a running Attempt and drop the ticket |
 | `POST` | `/api/tickets/:id/approve` | accept review; never merges (demo only) |
 | `GET` | `/api/outbox` | delivery queue |
-| `POST` | `/api/outbox/:id/replay` | replay a failed/dead delivery (demo only) |
+| `POST` | `/api/outbox/flush` | send due deliveries |
+| `POST` | `/api/outbox/:id/replay` | requeue a failed/dead delivery |
 | `GET` | `/api/workers` | worker pool |
 | `POST` | `/api/workers/:id/toggle` | pause/resume a worker (demo only) |
 | `GET` | `/api/sources` | connectors |
@@ -149,21 +159,25 @@ do not create a new Ticket. Every delivery is deduplicated by
 
 - Demo Router: events, Tickets, Attempts, deliveries, workers, and audit state.
 - Project Router: real `.loop/state.json`, `.loop/inbox.json`, Ticket records,
-  Attempt artifacts, and the core lock.
+  `.loop/outbox.json`, Attempt artifacts, and the core lock.
 - Deduplication, event consumption, concurrency limits, leases, retries, dead
   letters, and human handoff.
 - GitHub webhook raw-body HMAC-SHA256 verification and delivery-id dedupe.
 - Local write token, same-origin session, Origin checks, rotation, and audit.
+- Persistent multi-repository registry, project switching, add/remove.
+- Executor adapter registration, timeouts, process-death detection, and cancel.
+- Real GitHub/Jira/Slack Outbox adapters with retry, 429 backoff, dead-letter,
+  request ids, and stable idempotency keys.
 - SSE live updates and the HTTP API.
 
 ## What is simulated or absent
 
-- Demo Worker execution is a timer; project mode reads real Tickets but does not
-  run an agent from the web process.
+- Demo Worker execution is a timer. Project mode starts the configured executor
+  only through `router tick`, never from the web process.
 - Demo Verifier evidence is synthetic; project mode surfaces real verifier
   evidence when the Router has written it.
-- Jira and Slack connectors store configuration only in demo mode.
-- Project-mode Outbox history is not persisted by the core Router yet.
+- Jira and Slack inbound connectors still store configuration only in demo mode;
+  their Outbox delivery paths are real when configured in `.self-loop.json`.
 - The JSON store is single-process. There is no database, multi-tenancy, SSO,
   RBAC, or hosted deployment.
 

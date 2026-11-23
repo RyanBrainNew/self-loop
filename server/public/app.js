@@ -35,6 +35,8 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5h10"/>',
   logs: '<path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+  projects:
+    '<rect x="4" y="5" width="16" height="5" rx="1.5"/><path d="M6 10v8h12v-8M9 14h6"/>',
 };
 
 const STATE_LABEL = {
@@ -163,6 +165,11 @@ function duration(start, end) {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds >= 3600) {
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  }
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
@@ -250,6 +257,7 @@ function pageTitle(route) {
     sources: 'Sources',
     workers: 'Workers',
     policy: 'Policy',
+    projects: 'Projects',
   }[route.name] || 'Overview';
 }
 
@@ -269,8 +277,9 @@ function shell() {
   const route = state.route;
   const caps = data.capabilities || {};
   const projects = data.projects || { currentId: null, items: [] };
-  const canSwitch = Boolean(caps.projectSelect && projects.items.length > 1);
+  const canSwitch = Boolean(caps.projectSelect && projects.items.length > 0);
   const project = data.config.project || { name: 'self-loop', repo: '' };
+  const currentProject = projects.items.find((item) => item.current);
   return `
     <div class="shell">
       <aside class="sidebar">
@@ -295,11 +304,14 @@ function shell() {
                   </select>`
                 : `<div class="project-name">${esc(project.name)}</div>`
             }
-            <div class="project-repo">${esc(project.repo || 'local project')}</div>
+            <div class="project-repo">${esc(project.repo || currentProject?.path || 'local project')}</div>
+            ${caps.projectSelect ? `<a class="project-manage" href="#/projects" data-route="#/projects">Manage projects</a>` : ''}
           </div>
           <span class="badge ${caps.mode === 'project' ? 'badge-cyan' : 'badge-green'}">${caps.mode === 'project' ? 'project' : 'demo'}</span>
         </div>
         <nav class="nav" aria-label="主导航">
+          <div class="nav-section">Workspace</div>
+          ${navItem('projects', 'Projects', 'projects', projects.items.length || '', route)}
           <div class="nav-section">Control plane</div>
           ${navItem('overview', 'Overview', 'overview', counts.activeTickets, route)}
           ${navItem('inbox', 'Inbox', 'inbox', counts.pendingEvents, route, 'hot')}
@@ -359,6 +371,7 @@ function view() {
   if (route.name === 'sources') return sourcesView();
   if (route.name === 'workers') return workersView();
   if (route.name === 'policy') return policyView();
+  if (route.name === 'projects') return projectsView();
   return overviewView();
 }
 
@@ -974,7 +987,13 @@ function attemptBlock(attempt) {
                   <td class="mono">${esc(item.command)}</td>
                   <td><span class="badge ${item.exitCode === 0 ? 'badge-green' : 'badge-red'}">${item.exitCode}</span></td>
                   <td class="mono">${item.durationMs}ms</td>
-                  <td class="mono dim">${esc(item.outputPath)}</td>
+                  <td>
+                    <div class="evidence-path">
+                      <span class="mono dim">${esc(item.outputPath || item.evidencePath || '—')}</span>
+                      <button class="btn btn-ghost btn-icon" data-action="copy" data-id="ev-${attempt.id}-${item.exitCode}-${encodeURIComponent(item.command)}" data-copy="${esc(item.outputPath || item.evidencePath || '')}" type="button" title="复制证据路径">${icon('copy')}</button>
+                    </div>
+                    ${item.stderrPath ? `<div class="mono dim evidence-subpath">${esc(item.stderrPath)}</div>` : ''}
+                  </td>
                 </tr>`,
               )
               .join('')}</tbody>
@@ -999,6 +1018,7 @@ function outboxView() {
       </div>
       <div class="page-actions">
         ${filterChips('outbox', [['all', 'All'], ['pending', 'Pending'], ['sent', 'Sent'], ['failed', 'Failed'], ['dead', 'Dead']])}
+        ${caps.outboxFlush ? `<button class="btn btn-primary" data-action="flush-outbox" type="button">${icon('outbox')} Flush</button>` : ''}
       </div>
     </div>
     ${
@@ -1006,14 +1026,19 @@ function outboxView() {
         ? `<div class="mode-banner">
             ${icon('outbox')}
             <div>
-              <div class="mode-banner-title">项目模式暂不持久化 Outbox 历史</div>
-              <div class="mode-banner-sub">
-                当前 Router 把状态写回 GitHub Issue 评论，但没有单独的投递队列表。
-                控制台不会伪造 sent/failed 记录；Outbox 持久化是后续 Issue。
-              </div>
+              <div class="mode-banner-title">Outbox 未启用</div>
+              <div class="mode-banner-sub">在 .self-loop.json 中配置 outbox.adapters 后，Router 会把状态写回持久化队列。</div>
             </div>
           </div>`
-        : ''
+        : caps.mode === 'project'
+          ? `<div class="mode-banner">
+              ${icon('outbox')}
+              <div>
+                <div class="mode-banner-title">Outbox 由 Router 入队，Flush 单独执行</div>
+                <div class="mode-banner-sub">Tick 不阻塞网络。GitHub / Jira / Slack 投递会记录状态码、request id、重试次数与死信；同一 idempotency key 不会重复发送。</div>
+              </div>
+            </div>`
+          : ''
     }
     <div class="kpi-grid kpi-grid-4">
       ${kpi('Delivered', data.deliveries.filter((d) => d.state === 'sent').length, '已送达', 'var(--green)', 'check')}
@@ -1041,7 +1066,7 @@ function outboxView() {
                   <td>${caps.outbox && ['failed', 'dead'].includes(delivery.state) ? `<button class="btn btn-sm" data-action="replay-delivery" data-id="${delivery.id}" type="button">${icon('refresh')} 重投</button>` : ''}</td>
                 </tr>`,
               )
-              .join('') || '<tr><td colspan="9" class="dim">没有匹配的投递</td></tr>'}
+              .join('') || `<tr><td colspan="9" class="dim">${caps.mode === 'project' ? '没有投递记录。Router 会在 Ticket 到达 Review / Blocked / Failed / Done 时入队。' : '没有匹配的投递'}</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1151,6 +1176,106 @@ function workersView() {
   `;
 }
 
+function projectsView() {
+  const data = state.data;
+  const caps = data.capabilities || {};
+  const projects = data.projects || { currentId: null, items: [] };
+  const items = projects.items || [];
+  const live = items.filter((project) => project.state === 'ready').length;
+  const tickets = items.reduce((sum, project) => sum + Number(project.tickets || 0), 0);
+  const blocked = items.reduce((sum, project) => sum + Number(project.blocked || 0), 0);
+  return `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">Projects</h1>
+        <p class="page-sub">一个控制面统一管理多个仓库。切换只改变当前读取的 .loop 状态，不复制 Ticket。</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn" data-action="refresh" type="button">${icon('refresh')} 刷新</button>
+        ${caps.projectAdd ? `<button class="btn btn-primary" data-action="add-project" type="button">${icon('plus')} 添加项目</button>` : ''}
+      </div>
+    </div>
+    <div class="kpi-grid kpi-grid-4">
+      ${kpi('Registered', items.length, '持久化注册表', 'var(--cyan)', 'projects')}
+      ${kpi('Live state', live, '可读取 .loop', 'var(--green)', 'database')}
+      ${kpi('Tickets', tickets, '所有项目合计', 'var(--blue)', 'tickets')}
+      ${kpi('Blocked', blocked, '需要人工介入', blocked ? 'var(--red)' : 'var(--dim)', 'alert')}
+    </div>
+    ${
+      items.length
+        ? `<div class="project-grid">
+            ${items
+              .map(
+                (project) => `<article class="project-card ${project.current ? 'current' : ''}">
+                  <div class="project-card-head">
+                    <div class="project-card-icon">${icon('projects')}</div>
+                    <div style="min-width:0">
+                      <div class="project-card-name">${esc(project.name)}</div>
+                      <div class="project-card-repo">${esc(project.repo || 'local repository')}</div>
+                    </div>
+                    <span class="badge ${project.state === 'ready' ? 'badge-green' : project.state === 'error' ? 'badge-red' : 'badge-amber'}">${esc(project.state)}</span>
+                  </div>
+                  <div class="project-path mono">${esc(project.path)}</div>
+                  <div class="project-stats">
+                    <div><div class="meta-label">Tickets</div><div class="meta-value">${project.tickets || 0}</div></div>
+                    <div><div class="meta-label">Active</div><div class="meta-value">${project.activeTickets || 0}</div></div>
+                    <div><div class="meta-label">Blocked</div><div class="meta-value">${project.blocked || 0}</div></div>
+                    <div><div class="meta-label">Updated</div><div class="meta-value">${project.updatedAt ? timeAgo(project.updatedAt) : '—'}</div></div>
+                  </div>
+                  <div class="project-runtime">
+                    <span>${icon('zap')} ${esc(project.executor?.adapter || 'command')}</span>
+                    <span>${project.maxConcurrent || 1} slots</span>
+                    ${project.lastSelectedAt ? `<span>selected ${timeAgo(project.lastSelectedAt)}</span>` : ''}
+                  </div>
+                  ${project.error ? `<div class="project-error">${esc(project.error)}</div>` : ''}
+                  <div class="project-card-actions">
+                    ${
+                      project.current
+                        ? '<span class="badge badge-cyan">current</span>'
+                        : `<button class="btn btn-primary btn-sm" data-action="switch-project" data-id="${project.id}" type="button">${icon('chevron')} 切换</button>`
+                    }
+                    ${
+                      caps.projectRemove
+                        ? `<button class="btn btn-danger btn-sm" data-action="remove-project" data-id="${project.id}" type="button">${icon('x')} 移除</button>`
+                        : ''
+                    }
+                  </div>
+                </article>`,
+              )
+              .join('')}
+          </div>`
+        : `<div class="mode-banner">
+            ${icon('projects')}
+            <div>
+              <div class="mode-banner-title">还没有注册项目</div>
+              <div class="mode-banner-sub">
+                当前是 demo 模式。运行 <code>npm run serve:project -- &lt;repo&gt;</code> 注册第一个项目；
+                注册后重启会直接进入统一 project 模式，并可在这里继续添加仓库。
+              </div>
+            </div>
+          </div>`
+    }
+    <section class="card" style="margin-top:14px">
+      <div class="card-header">
+        <div><div class="card-title">注册表边界</div><div class="card-sub">${caps.mode === 'project' ? '本地持久化 · 写操作需要 token' : 'demo 模式不写注册表'}</div></div>
+        <span class="badge badge-muted">projects.json</span>
+      </div>
+      <div class="list">
+        ${[
+          ['一个地址', 'Projects 页面和侧栏切换器共享同一个控制面。'],
+          ['仓库白名单', '只接受启动时注册或经 token 验证后添加的真实仓库。'],
+          ['无第二份状态', `每个项目继续读取自己的 .loop/state.json；写入委托给 Router CLI。`],
+          ['重启保留', '项目注册表与最后选择的项目会持久化，不需要重复传 --repo。'],
+        ]
+          .map(
+            ([title, detail]) => `<div class="list-row"><span style="color:var(--cyan);margin-top:2px">${icon('shield')}</span><div class="list-main"><div class="list-title">${title}</div><div class="list-sub">${detail}</div></div></div>`,
+          )
+          .join('')}
+      </div>
+    </section>
+  `;
+}
+
 function policyView() {
   const data = state.data;
   const caps = data.capabilities || {};
@@ -1182,7 +1307,7 @@ function policyView() {
             ? `<div class="modal-actions" style="justify-content:flex-start">
                 <button class="btn btn-primary" data-action="save-config" type="button">${icon('check')} 保存参数</button>
               </div>`
-            : `<p class="card-sub" style="font-size:11px;line-height:1.6;margin-top:10px">项目模式只读；参数来自 .self-loop.json 与 Router 配置。</p>`
+            : `<p class="card-sub" style="font-size:11px;line-height:1.6;margin-top:10px">项目模式只读；参数来自 .self-loop.json 与 Router 配置。tickMs / workMs / verifyMs 为 0 表示该项目不内置定时循环，由 cron、watchdog 或控制台 Run tick 驱动。</p>`
         }
       </section>
       <section class="card">
@@ -1471,6 +1596,65 @@ function openSourceModal() {
   setTimeout(() => document.getElementById('src-name')?.focus(), 40);
 }
 
+function openProjectModal() {
+  state.modal = 'project';
+  modalRoot.innerHTML = `
+    <div class="modal-backdrop" data-backdrop="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <div>
+            <div class="modal-title" id="modal-title">添加本地项目</div>
+            <div class="modal-sub">注册一个 Git 仓库或已初始化的 self-loop 项目。写入会记录到控制台审计。</div>
+          </div>
+          <button class="btn btn-ghost btn-icon" data-action="close-modal" type="button" aria-label="关闭">${icon('x')}</button>
+        </div>
+        <form id="project-form">
+          <div class="form-grid">
+            <div class="field full">
+              <label for="prj-path">仓库路径</label>
+              <input class="input mono" id="prj-path" required placeholder="/absolute/path/to/project">
+            </div>
+            <div class="field full">
+              <label for="prj-name">显示名称（可选）</label>
+              <input class="input" id="prj-name" placeholder="默认使用目录名或 GitHub 仓库名">
+            </div>
+          </div>
+          <div class="mode-banner" style="margin:4px 0 0">
+            ${icon('shield')}
+            <div>
+              <div class="mode-banner-title">只接受本地真实路径</div>
+              <div class="mode-banner-sub">项目必须是 Git 仓库，或包含 <code>.self-loop.json</code> / <code>.loop</code>。控制台不会接收任意远程 URL。</div>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn" data-action="close-modal" type="button">取消</button>
+            <button class="btn btn-primary" type="submit">${icon('plus')} 注册并切换</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+  document.getElementById('project-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      await api('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify({
+          path: document.getElementById('prj-path').value.trim(),
+          name: document.getElementById('prj-name').value.trim(),
+        }),
+      });
+      closeModal();
+      location.hash = '#/projects';
+      await refresh();
+      toast('项目已注册并切换');
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  setTimeout(() => document.getElementById('prj-path')?.focus(), 40);
+}
+
 async function handleAction(action, id) {
   try {
     if (action === 'toggle-pause') {
@@ -1502,6 +1686,27 @@ async function handleAction(action, id) {
     }
     if (action === 'inject-event') return openEventModal();
     if (action === 'add-source') return openSourceModal();
+    if (action === 'add-project') return openProjectModal();
+    if (action === 'switch-project') {
+      await api(`/api/projects/${encodeURIComponent(id)}/select`, { method: 'POST' });
+      location.hash = '#/overview';
+      await refresh();
+      toast('已切换目标项目');
+      return;
+    }
+    if (action === 'remove-project') {
+      if (!window.confirm('从控制面移除这个项目？不会删除仓库或 .loop 数据。')) return;
+      await api(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await refresh();
+      toast('项目已从注册表移除', 'warn');
+      return;
+    }
+    if (action === 'flush-outbox') {
+      const result = await api('/api/outbox/flush', { method: 'POST' });
+      await refresh();
+      toast(result.detail || 'Outbox 已投递');
+      return;
+    }
     if (action === 'close-modal') return closeModal();
     if (action === 'focus-answer') {
       const element = document.getElementById(`answer-${id}`);

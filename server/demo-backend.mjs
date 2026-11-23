@@ -2,6 +2,7 @@ export const DEMO_CAPABILITIES = Object.freeze({
   mode: 'demo',
   liveState: false,
   outbox: true,
+  outboxFlush: true,
   simulate: true,
   pause: true,
   injectEvent: true,
@@ -106,6 +107,22 @@ export class DemoBackend {
 
   replayDelivery(id, actor) {
     return this.engine.replayDelivery(id, actor);
+  }
+
+  flushOutbox() {
+    return {
+      ok: true,
+      detail: 'demo 模式由模拟 Router 自动投递',
+      output: '',
+    };
+  }
+
+  addProject() {
+    return this.unsupported('添加项目');
+  }
+
+  removeProject() {
+    return this.unsupported('移除项目');
   }
 
   toggleWorker(id) {

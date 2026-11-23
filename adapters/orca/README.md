@@ -61,6 +61,32 @@ orca automations run <automationId> --json
 orca automations edit <automationId> --enabled --json
 ```
 
+## Optional Router executor adapter
+
+When Orca should launch the Worker instead of the core command adapter, keep
+`worktreeMode: "external"` and declare an adapter name plus the exact Orca
+command that starts an agent in the current worktree:
+
+```json
+{
+  "executor": {
+    "adapter": "orca",
+    "command": ["orca", "..."],
+    "timeoutMinutes": 45,
+    "capabilities": ["issue-to-pr"]
+  },
+  "router": {
+    "worktreeMode": "external",
+    "dispatchMode": "background"
+  }
+}
+```
+
+The command receives the installed `references/WORK.md` path as its final
+argument and must write the Result Envelope to `SELF_LOOP_RESULT`. The core
+executor registry accepts any custom adapter name without importing this
+adapter, so Orca remains optional and absent from core scripts.
+
 ## Verify
 
 ```bash
