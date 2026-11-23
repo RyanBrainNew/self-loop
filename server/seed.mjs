@@ -220,6 +220,9 @@ export function createDemoState(now = Date.now()) {
       body: '扫描 package-lock，列出可升级依赖和安全公告。',
       acceptance: ['列出高风险依赖', '给出升级建议'],
       everyMinutes: 1440,
+      scheduleType: 'interval',
+      cron: '',
+      timezone: 'Asia/Shanghai',
       schedule: '每天 09:00',
       priority: 'normal',
       labels: ['automation', 'dependencies'],
@@ -229,6 +232,9 @@ export function createDemoState(now = Date.now()) {
       lastRunAt: ago(now, 420),
       nextRunAt: new Date(now + 6 * 60 * MINUTE).toISOString(),
       lastEventId: 'evt_auto_1',
+      runs: [
+        { at: ago(now, 420), eventId: 'evt_auto_1', duplicate: false },
+      ],
     },
     {
       id: 'aut_weekly',
@@ -237,6 +243,9 @@ export function createDemoState(now = Date.now()) {
       body: '汇总本周合并的 PR、失败的投递和阻塞任务。',
       acceptance: ['包含本周合并 PR', '包含阻塞任务'],
       everyMinutes: 10080,
+      scheduleType: 'cron',
+      cron: '0 10 * * 1',
+      timezone: 'Asia/Shanghai',
       schedule: '每周一 10:00',
       priority: 'low',
       labels: ['automation', 'report'],
@@ -246,6 +255,7 @@ export function createDemoState(now = Date.now()) {
       lastRunAt: null,
       nextRunAt: null,
       lastEventId: null,
+      runs: [],
     },
   ];
 

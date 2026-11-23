@@ -127,10 +127,15 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 | `POST` | `/api/connectors/jira/sync` | run one Jira incremental sync |
 | `GET` | `/api/automations` | scheduled automation definitions |
 | `POST` | `/api/automations` | create an automation |
+| `PATCH` | `/api/automations/:id` | edit automation name, schedule, labels, or acceptance |
+| `DELETE` | `/api/automations/:id` | remove an automation |
+| `GET` | `/api/automations/:id/history` | recent automation run history |
 | `POST` | `/api/automations/:id/toggle` | enable or pause an automation |
 | `POST` | `/api/automations/:id/run` | run an automation now |
 | `GET` | `/api/workers` | local and remote worker pools |
 | `POST` | `/api/workers/register` | register a remote worker and return its token |
+| `POST` | `/api/workers/:id/rotate` | rotate a remote worker token |
+| `DELETE` | `/api/workers/:id` | revoke a remote worker |
 | `POST` | `/api/remote/heartbeat` | worker-token heartbeat |
 | `POST` | `/api/remote/claim` | worker-token claim of one queued Ticket |
 | `POST` | `/api/remote/complete` | worker-token Result Envelope submission |
@@ -173,6 +178,17 @@ Supported issue actions are `opened`, `reopened`, `labeled`, and `edited`.
 `edited` is visible in Inbox but recorded as ignored because metadata changes
 do not create a new Ticket. Every delivery is deduplicated by
 `X-GitHub-Delivery`.
+
+PR comments can request follow-up work without turning every review comment
+into a Ticket. A comment on a pull request (including `pull_request_review`
+and `pull_request_review_comment` payloads) is normalized when it contains
+`/loop` or `@self-loop`. The resulting `task` event carries `prNumber`,
+`commentId`, `commentUrl`, and a stable external id, so the follow-up Ticket
+stays traceable to the review thread and webhook retries are idempotent.
+
+`GET /api/audit` accepts `action`, `actor`, `source`, `ok`, `q`, `before`, and
+`limit` query parameters and returns both the filtered list and a merged
+`entries` stream. The Policy page uses the same fields for its search table.
 
 ## Slack ingress
 
@@ -265,9 +281,14 @@ are project-mode only and reject cross-site Origins.
   counts for dashboards.
 - `GET /metrics` returns Prometheus text metrics with stable zero-valued
   series for known ticket/delivery states.
+- The `Observability / 可观测性` page combines queue health, ticket and
+  delivery distributions, connector/Worker health, and actionable alerts.
+- `deploy/prometheus/self-loop.rules.yml` contains starter alert rules.
 - `npm run backup -- --repo <repo>` writes a timestamped backup with a
   manifest; `npm run restore -- --repo <repo> --backup <dir> --dry-run`
   previews a restore. `worktrees/` is excluded and `artifacts/` is opt-in.
+- systemd tick/backup examples and the full recovery runbook live in
+  [`docs/OPERATIONS.md`](../docs/OPERATIONS.md).
 
 ## Themes and bilingual UI
 

@@ -88,6 +88,7 @@ npm run migrate:sqlite -- --repo /path/to/project
 
 ```bash
 npm run test:e2e:codex
+npm run test:github:live -- --repo owner/name   # 可选，只读
 ```
 
 发布前检查与运维：
@@ -103,6 +104,8 @@ Verifier；需要先登录对应 CLI。详见 `server/README.md`、
 `references/CONFIG.md`、`references/ROUTER.md` 和 ADR 0010–0015。
 本机 Codex 的真实运行证据见
 [`docs/EVIDENCE-CODEX-E2E.md`](docs/EVIDENCE-CODEX-E2E.md)。
+控制台多主题、双模式、审计筛选和项目切换的 QA 记录见
+[`docs/EVIDENCE-CONSOLE-QA.md`](docs/EVIDENCE-CONSOLE-QA.md)。
 托管版的 Slack/Jira OAuth 与本机凭据的区别见
 [`docs/HOSTED-OAUTH.md`](docs/HOSTED-OAUTH.md)。
 
@@ -110,6 +113,14 @@ Verifier；需要先登录对应 CLI。详见 `server/README.md`、
 `router claim/complete` 接入远程执行器；`GET /metrics` 与
 `GET /api/observability` 暴露队列和 Worker 指标；`npm run backup` /
 `npm run restore` 提供带 manifest 的备份恢复。通用 Webhook Outbox 也已支持。
+完整的 systemd、Prometheus 告警、备份演练和发布流程见
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md)。
+
+控制台的 `Observability / 可观测性` 页面把 Queue health、Ticket 状态分布、
+Outbox 投递分布、Source/Worker 健康和告警集中在一页；`Policy / 策略` 页面的
+审计表支持按来源、结果和关键词筛选。GitHub PR 评论中以 `/loop` 或
+`@self-loop` 开头的指令会生成带 PR/评论链接的 follow-up Ticket，并通过
+delivery id 去重。
 
 ## 官网
 
@@ -416,7 +427,7 @@ Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽�
 服务端控制台另外覆盖事件去重、Ticket/Attempt 生命周期、人工回答、Outbox
 重试、GitHub webhook 验签与幂等、secret 脱敏、连接器与 Worker 开关、
 本地 token / Origin 防护、项目模式 Router 委派，以及 HTTP API。当前测试
-基线：`75` 个测试全部通过（Node 20+）。
+基线：`108` 个测试全部通过（Node 20+）。
 
 ## 设计文档
 

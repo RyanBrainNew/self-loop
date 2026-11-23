@@ -68,6 +68,7 @@ export function registerWorker(settings, input = {}, now = Date.now()) {
     id: String(input.id || `rwk_${randomUUID().slice(0, 10)}`),
     name: String(input.name || 'remote-worker').slice(0, 120),
     kind: String(input.kind || 'remote').slice(0, 40),
+    version: String(input.version || '').slice(0, 40),
     capabilities: Array.isArray(input.capabilities)
       ? input.capabilities.map(String)
       : String(input.capabilities || '')
@@ -119,8 +120,29 @@ export function heartbeatWorker(settings, token, patch = {}, now = Date.now()) {
   worker.capabilities = Array.isArray(patch.capabilities)
     ? patch.capabilities.map(String)
     : worker.capabilities;
+  if (patch.version !== undefined) worker.version = String(patch.version).slice(0, 40);
   saveWorkers(settings, data);
   return cleanWorker(worker, now);
+}
+
+export function rotateWorkerToken(settings, id, now = Date.now()) {
+  const data = loadWorkers(settings);
+  const worker = data.workers.find((item) => item.id === id);
+  if (!worker) throw new Error(`unknown worker: ${id}`);
+  const token = `sw_${randomBytes(24).toString('hex')}`;
+  worker.tokenHash = hashToken(token);
+  worker.lastHeartbeatAt = new Date(now).toISOString();
+  saveWorkers(settings, data);
+  return { worker: cleanWorker(worker, now), token };
+}
+
+export function revokeWorker(settings, id) {
+  const data = loadWorkers(settings);
+  const index = data.workers.findIndex((item) => item.id === id);
+  if (index < 0) throw new Error(`unknown worker: ${id}`);
+  const [removed] = data.workers.splice(index, 1);
+  saveWorkers(settings, data);
+  return cleanWorker(removed);
 }
 
 export function markWorker(settings, id, patch = {}, now = Date.now()) {
@@ -158,7 +180,15 @@ function main(argv = process.argv.slice(2)) {
     console.log(JSON.stringify(heartbeatWorker(settings, token, patch), null, 2));
     return 0;
   }
-  throw new Error('usage: workers --repo <repo> list|register|heartbeat');
+  if (action === 'rotate') {
+    console.log(JSON.stringify(rotateWorkerToken(settings, values.id), null, 2));
+    return 0;
+  }
+  if (action === 'revoke') {
+    console.log(JSON.stringify(revokeWorker(settings, values.id), null, 2));
+    return 0;
+  }
+  throw new Error('usage: workers --repo <repo> list|register|heartbeat|rotate|revoke');
 }
 
 if (isMain(import.meta.url)) {

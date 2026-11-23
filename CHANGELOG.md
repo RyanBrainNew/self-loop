@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0
+
+- Added cron + timezone schedules, edit/delete/history APIs and UI for automations.
+- Added remote Worker version/rotation/revocation and corrected multi-Ticket
+  remote concurrency accounting.
+- Added the Observability page with queue, state, connector, worker, and alert
+  summaries, plus filtered and paginated console audit queries.
+- Added GitHub PR review-comment commands (`/loop`, `@self-loop`) that create
+  deduplicated follow-up Tasks with PR/comment links.
+- Fixed connector task acceptance criteria being ignored by the Task Card.
+- Added Prometheus alert rules, systemd tick/backup examples, an operations
+  runbook, and tag-driven GitHub Release packaging.
+
 ## 0.4.0
 
 - Added a multi-project local console with project switching and a persistent registry.

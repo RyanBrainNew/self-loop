@@ -461,13 +461,17 @@ serializes its own read-modify-write cycle.
 enabled automation whose `nextRunAt` is due and appends one durable `task`
 Inbox event. The event then follows the normal Ticket, lease, Verifier, and
 human-review path. Automation definitions can be managed with
-`router automations list|add|toggle|run`.
+`router automations list|add|edit|remove|history|toggle|run`. Intervals and
+five-field cron expressions are supported; cron schedules use an explicit
+timezone. Each automation keeps a bounded run history.
 
 ## Remote workers
 
 Remote workers register through `router workers register` (or
 `POST /api/workers/register` in the console). The returned `sw_...` token is
 shown once; only its SHA-256 hash is stored in `.loop/workers.json`.
+`router workers rotate|revoke` invalidates a worker token without changing the
+Ticket state machine.
 
 The worker loop is:
 
@@ -494,6 +498,10 @@ The local console exposes:
 - `GET /metrics` for Prometheus text metrics (`self_loop_tickets`,
   `self_loop_inbox_events`, `self_loop_outbox_deliveries`, worker and automation
   gauges).
+- The console `Observability / 可观测性` page for queue health, ticket and
+  delivery distributions, connector/Worker health, and actionable alerts.
+- `deploy/prometheus/self-loop.rules.yml` for starter alert rules and
+  `docs/OPERATIONS.md` for systemd, backup, and incident procedures.
 
 `scripts/backup.mjs` copies config, state, tickets, inbox, outbox, SQLite DB,
 connector cursors, automations, and workers into a timestamped directory with a
@@ -514,8 +522,11 @@ The Verifier is required before `awaiting_review`. It:
 
 No discovered command means `human_review`; it is never a false pass. A
 timeout is a failure. A `fail` consumes the Attempt and either requeues or
-blocks at the budget. The first version uses a clean worktree and process, not
-a container or sandbox.
+blocks at the budget. The default runner is a clean worktree plus a local
+process. Set `verifier.commandPrefix` to route the same commands through
+Docker, Podman, or another wrapper; `${worktree}` expands to the clean
+verification directory. Container isolation is an operator choice and must be
+combined with a pinned image, network policy, and no host credential leakage.
 
 ## Memory write permissions
 

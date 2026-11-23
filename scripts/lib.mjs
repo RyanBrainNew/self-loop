@@ -496,6 +496,12 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
       ),
     },
     verifier: {
+      commandPrefix: stringArray(
+        overrides.verifierCommandPrefix
+          ?? firstEnv(env, ['SELF_LOOP_VERIFY_COMMAND_PREFIX'])
+          ?? verifierConfig.commandPrefix
+          ?? [],
+      ),
       commands: stringArray(
         overrides.verifierCommands
           ?? verifierConfig.commands

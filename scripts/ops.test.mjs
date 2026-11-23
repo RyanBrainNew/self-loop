@@ -25,9 +25,12 @@ import {
   saveState,
 } from './router.mjs';
 import {
+  authenticateWorker,
   heartbeatWorker,
   listWorkers,
   registerWorker,
+  revokeWorker,
+  rotateWorkerToken,
 } from './workers.mjs';
 import {
   deliverOutbox,
@@ -61,13 +64,33 @@ test('automations create one task event per due window', () => {
     everyMinutes: 60,
   }, now);
   const due = runDueAutomations(settings, now);
-  assert.equal(due.length, 1);
-  assert.equal(due[0].event.type, 'task');
-  assert.equal(due[0].event.payload.source.kind, 'automation');
-  assert.equal(loadAutomations(settings).automations[0].lastRunAt, new Date(now).toISOString());
-  assert.equal(runDueAutomations(settings, now + 30_000).length, 0);
-  assert.equal(runDueAutomations(settings, now + 61 * 60_000).length, 1);
+  assert.equal(due.length, 0);
+  assert.equal(automation.nextRunAt, new Date(now + 60 * 60_000).toISOString());
+  const firstRun = runDueAutomations(settings, now + 61 * 60_000);
+  assert.equal(firstRun.length, 1);
+  assert.equal(firstRun[0].event.type, 'task');
+  assert.equal(firstRun[0].event.payload.source.kind, 'automation');
+  assert.equal(
+    loadAutomations(settings).automations[0].lastRunAt,
+    new Date(now + 61 * 60_000).toISOString(),
+  );
+  assert.equal(runDueAutomations(settings, now + 62 * 60_000).length, 0);
   assert.equal(automation.everyMinutes, 60);
+});
+
+test('cron automations honor timezone and compute the next weekday run', () => {
+  const { settings } = fixture();
+  const now = Date.parse('2026-11-23T00:00:00.000Z');
+  const automation = addAutomation(settings, {
+    name: 'weekday morning',
+    title: 'weekday task',
+    cron: '0 9 * * 1-5',
+    timezone: 'Asia/Shanghai',
+  }, now);
+  assert.equal(automation.scheduleType, 'cron');
+  assert.equal(automation.nextRunAt, '2026-11-23T01:00:00.000Z');
+  assert.equal(runDueAutomations(settings, Date.parse('2026-11-23T00:59:00.000Z')).length, 0);
+  assert.equal(runDueAutomations(settings, Date.parse('2026-11-23T01:00:00.000Z')).length, 1);
 });
 
 test('remote workers register, heartbeat, claim, and complete through the Router', async () => {
@@ -117,6 +140,13 @@ test('remote workers register, heartbeat, claim, and complete through the Router
   });
   assert.equal(completed.ticket.state, 'verifying');
   assert.equal(listWorkers(settings)[0].currentTicketId, null);
+
+  const rotated = rotateWorkerToken(settings, registered.worker.id);
+  assert.notEqual(rotated.token, registered.token);
+  assert.throws(() => authenticateWorker(settings, registered.token), /unknown or revoked/);
+  assert.equal(authenticateWorker(settings, rotated.token).name, 'box-1');
+  revokeWorker(settings, registered.worker.id);
+  assert.equal(listWorkers(settings).length, 0);
 });
 
 test('generic webhook outbox signs and posts the delivery body', async () => {

@@ -16,6 +16,7 @@ the `package.json` license field in sync.
 - `references/` - workflow, memory, and policy documentation.
 - `templates/memory/` - generic project memory templates.
 - `adapters/orca/` - optional Orca setup, prompts, and precheck.
+- `deploy/` - systemd units and Prometheus alert rules for self-hosting.
 - `server/` - local-first Router console: HTTP API, demo seed, project-state
   adapter, persistent multi-repo registry (`project-store.mjs`), local write
   auth, Slack/Jira connector adapters, observability, and the dependency-free
@@ -62,6 +63,9 @@ the `package.json` license field in sync.
 - The console UI must keep English technical terms paired with Chinese
   explanations and provide multiple color themes. Accessibility landmarks
   (`main`, skip link, aria labels) are part of the contract.
+- GitHub PR review comments only create Tasks when they contain an explicit
+  `/loop` or `@self-loop` command. A follow-up keeps the PR/comment link and
+  delivery-id dedupe; a plain review comment remains ignored context.
 - Core scripts must not assume the current directory or a project-local `loop/`
   directory. Accept `--repo`, then `SELF_LOOP_REPO`, then legacy `LOOP_REPO`.
 - All git operations, output, and memory paths stay inside the target repo.
@@ -92,6 +96,7 @@ npm run serve
 npm run serve:project -- /path/to/project
 npm run migrate:sqlite -- --repo /path/to/project --dry-run
 npm run test:e2e:codex
+npm run test:github:live -- --repo owner/name
 node scripts/setup-project.mjs --repo /path/to/project --dry-run
 node scripts/init-memory.mjs --repo /path/to/project --dry-run
 node scripts/run.mjs router status --repo /path/to/project --json

@@ -1,0 +1,14 @@
+[Unit]
+Description=Back up self-loop project state
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=selfloop
+WorkingDirectory=/opt/self-loop
+ExecStart=/usr/bin/node /opt/self-loop/scripts/backup.mjs --repo /srv/project
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/project /home/selfloop/.self-loop

@@ -149,6 +149,56 @@ function parseLimit(value, fallback = 200) {
   return Math.min(parsed, 1000);
 }
 
+function auditFilterFrom(url) {
+  const ok = url.searchParams.get('ok');
+  return {
+    action: (url.searchParams.get('action') || '').toLowerCase(),
+    actor: (url.searchParams.get('actor') || '').toLowerCase(),
+    source: (url.searchParams.get('source') || '').toLowerCase(),
+    query: (url.searchParams.get('q') || '').toLowerCase(),
+    ok: ok === 'true' ? true : ok === 'false' ? false : null,
+    before: url.searchParams.get('before') || '',
+    limit: parseLimit(url.searchParams.get('limit'), 100),
+  };
+}
+
+function filterAuditEntries(entries, filter, sourceFallback = 'router') {
+  const before = filter.before ? Date.parse(filter.before) : NaN;
+  return [...(entries || [])]
+    .map((entry) => ({
+      ...entry,
+      source: entry.source || sourceFallback,
+      ok: entry.ok !== false,
+    }))
+    .filter((entry) => {
+      if (filter.action && !String(entry.action || '').toLowerCase().includes(filter.action)) {
+        return false;
+      }
+      if (filter.actor && !String(entry.actor || '').toLowerCase().includes(filter.actor)) {
+        return false;
+      }
+      if (filter.source && !String(entry.source || '').toLowerCase().includes(filter.source)) {
+        return false;
+      }
+      if (filter.ok !== null && Boolean(entry.ok) !== filter.ok) return false;
+      if (Number.isFinite(before) && Date.parse(entry.at || 0) >= before) return false;
+      if (filter.query) {
+        const haystack = [
+          entry.actor,
+          entry.action,
+          entry.detail,
+          entry.project,
+          entry.ip,
+          entry.source,
+        ].join(' ').toLowerCase();
+        if (!haystack.includes(filter.query)) return false;
+      }
+      return true;
+    })
+    .sort((left, right) => Date.parse(right.at || 0) - Date.parse(left.at || 0))
+    .slice(0, filter.limit);
+}
+
 export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }) {
   const clients = new Set();
   const publicRoot = resolve(publicDir);
@@ -158,6 +208,8 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     snapshot.sources = (snapshot.sources || []).map(redactSource);
     snapshot.capabilities = backend.capabilities;
     snapshot.projects = snapshot.projects || backend.projects();
+    snapshot.consoleAudit = audit.list(50);
+    snapshot.observability = observabilitySummary(snapshot);
     return snapshot;
   }
 
@@ -323,18 +375,26 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     let result;
     try {
       if (backend.mode === 'project') {
-        const ticket = Number(eventInput.externalId?.replace(/\D/g, '')) || null;
+        const taskEvent = eventInput.kind === 'task.created';
+        const ticket = taskEvent
+          ? null
+          : Number(eventInput.externalId?.replace(/\D/g, '')) || null;
         const posted = await backend.runRouterFor(projectEntry, [
           'post',
           '--type',
-          eventName === 'pull_request' ? 'pull_request' : 'issue',
+          taskEvent ? 'task' : eventName === 'pull_request' ? 'pull_request' : 'issue',
           ...(ticket ? ['--ticket', String(ticket)] : []),
           '--action',
           String(payload.action || ''),
           '--id',
           dedupeKey,
           '--data',
-          JSON.stringify(payload),
+          JSON.stringify(taskEvent
+            ? {
+                ...eventInput,
+                source: { id: source.id, kind: source.kind, name: source.name },
+              }
+            : payload),
         ]);
         let duplicate = false;
         try {
@@ -775,6 +835,32 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
       return sendJson(res, 200, result);
     }
 
+    const automationDetail = path.match(/^\/api\/automations\/([^/]+)$/);
+    if (automationDetail && method === 'PATCH') {
+      requireCapability('automationWrite', '编辑定时自动化');
+      const id = decodeURIComponent(automationDetail[1]);
+      const body = await readBody(req);
+      const result = await backend.editAutomation(id, body);
+      record(req, authorization, 'automation.updated', id);
+      broadcast();
+      return sendJson(res, 200, result);
+    }
+    if (automationDetail && method === 'DELETE') {
+      requireCapability('automationWrite', '删除定时自动化');
+      const id = decodeURIComponent(automationDetail[1]);
+      const result = await backend.removeAutomation(id);
+      record(req, authorization, 'automation.removed', id);
+      broadcast();
+      return sendJson(res, 200, result);
+    }
+
+    const automationHistory = path.match(/^\/api\/automations\/([^/]+)\/history$/);
+    if (automationHistory && method === 'GET') {
+      return sendJson(res, 200, await backend.automationHistory(
+        decodeURIComponent(automationHistory[1]),
+      ));
+    }
+
     if (path === '/api/events' && method === 'GET') {
       const status = url.searchParams.get('status');
       const limit = parseLimit(url.searchParams.get('limit'));
@@ -910,6 +996,26 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
       return sendJson(res, 201, result);
     }
 
+    const workerRotate = path.match(/^\/api\/workers\/([^/]+)\/rotate$/);
+    if (workerRotate && method === 'POST') {
+      requireCapability('remoteWorkerWrite', '轮换远程执行器 token');
+      const id = decodeURIComponent(workerRotate[1]);
+      const result = await backend.rotateRemoteWorker(id);
+      record(req, authorization, 'worker.token_rotated', id);
+      broadcast();
+      return sendJson(res, 200, result);
+    }
+
+    const remoteWorkerDetail = path.match(/^\/api\/workers\/([^/]+)$/);
+    if (remoteWorkerDetail && method === 'DELETE') {
+      requireCapability('remoteWorkerWrite', '吊销远程执行器');
+      const id = decodeURIComponent(remoteWorkerDetail[1]);
+      const result = await backend.revokeRemoteWorker(id);
+      record(req, authorization, 'worker.revoked', id);
+      broadcast();
+      return sendJson(res, 200, result);
+    }
+
     const workerToggle = path.match(/^\/api\/workers\/([^/]+)\/toggle$/);
     if (workerToggle && method === 'POST') {
       requireCapability('workerWrite', '暂停 Worker');
@@ -920,11 +1026,22 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     }
 
     if (path === '/api/audit' && method === 'GET') {
-      const limit = parseLimit(url.searchParams.get('limit'), 100);
+      const filter = auditFilterFrom(url);
       const snapshot = publicSnapshot();
+      const routerAudit = filterAuditEntries(snapshot.audit, filter, 'router');
+      const consoleAudit = filterAuditEntries(
+        audit.list(500),
+        filter,
+        'console',
+      );
+      const entries = [...routerAudit, ...consoleAudit]
+        .sort((left, right) => Date.parse(right.at || 0) - Date.parse(left.at || 0))
+        .slice(0, filter.limit);
       return sendJson(res, 200, {
-        audit: (snapshot.audit || []).slice(0, limit),
-        consoleAudit: audit.list(limit),
+        audit: routerAudit,
+        consoleAudit,
+        entries,
+        limit: filter.limit,
       });
     }
 

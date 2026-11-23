@@ -47,14 +47,26 @@ export function discoverVerifierCommands({ repoRoot, settings } = {}) {
   return commands;
 }
 
-function runShell(command, cwd, timeoutMs) {
+function runShell(command, cwd, timeoutMs, prefix = []) {
+  const env = { ...process.env, CI: process.env.CI || '1' };
+  if (Array.isArray(prefix) && prefix.length > 0) {
+    const expanded = prefix.map((item) => String(item).replaceAll('${worktree}', cwd));
+    return spawnSync(expanded[0], [...expanded.slice(1), command], {
+      cwd,
+      shell: false,
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      env,
+    });
+  }
   return spawnSync(command, {
     cwd,
     shell: true,
     encoding: 'utf8',
     timeout: timeoutMs,
     maxBuffer: 16 * 1024 * 1024,
-    env: { ...process.env, CI: process.env.CI || '1' },
+    env,
   });
 }
 
@@ -143,7 +155,12 @@ export function runVerifier({
   try {
     for (const command of commands) {
       const started = Date.now();
-      const result = runShell(command, verifyRoot, timeoutMs);
+      const result = runShell(
+        command,
+        verifyRoot,
+        timeoutMs,
+        settings.verifier.commandPrefix,
+      );
       const durationMs = Date.now() - started;
       const status = result.error?.code === 'ETIMEDOUT'
         ? 'timeout'
@@ -158,6 +175,9 @@ export function runVerifier({
       const entry = {
         at: new Date(now).toISOString(),
         command,
+        commandPrefix: settings.verifier.commandPrefix?.length
+          ? settings.verifier.commandPrefix
+          : null,
         cwd: verifyRoot,
         status,
         exitCode: result.status,

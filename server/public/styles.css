@@ -156,6 +156,10 @@
   box-sizing: border-box;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .skip-link {
   position: fixed;
   top: -60px;
@@ -2078,6 +2082,17 @@ textarea {
   margin-top: auto;
 }
 
+.automation-history {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.automation-history summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .empty-state {
   display: grid;
   justify-items: center;
@@ -2172,6 +2187,106 @@ textarea {
   font-size: 10px;
 }
 
+.obs-health {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.obs-health > div {
+  display: grid;
+  gap: 2px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--fill-soft);
+}
+
+.obs-health span {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.obs-health b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.distribution {
+  display: grid;
+  gap: 9px;
+}
+
+.distribution-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 10px;
+}
+
+.distribution-label {
+  min-width: 0;
+  font-size: 11px;
+}
+
+.distribution-label .badge {
+  max-width: 100%;
+}
+
+.distribution-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--fill);
+}
+
+.distribution-track span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  transition: width 220ms ease;
+}
+
+.distribution-row > b {
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.obs-alert {
+  width: 100%;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.metrics-snippet {
+  overflow-x: auto;
+  white-space: pre;
+  font-size: 10.5px;
+  line-height: 1.75;
+}
+
+.audit-filters {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 190px) minmax(140px, 180px) auto auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
 @media (max-width: 1180px) {
   .topbar-crumb,
   .topbar-meta {
@@ -2185,6 +2300,14 @@ textarea {
 
   .meta-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .obs-health {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .audit-filters {
+    grid-template-columns: minmax(160px, 1fr) 150px 150px;
   }
 }
 
@@ -2289,6 +2412,14 @@ textarea {
   }
 
   .meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .distribution-row {
+    grid-template-columns: 108px minmax(0, 1fr) 28px;
+  }
+
+  .audit-filters {
     grid-template-columns: 1fr;
   }
 

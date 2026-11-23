@@ -393,6 +393,81 @@ test('GitHub webhook records unsupported and metadata-only events as ignored', a
   }
 });
 
+test('GitHub review comments with /loop create a traceable follow-up Task', async () => {
+  const context = await httpFixture();
+  try {
+    const payload = {
+      action: 'created',
+      repository: { full_name: 'acme/self-loop' },
+      sender: { login: 'reviewer' },
+      issue: {
+        number: 42,
+        title: 'Webhook issue #42',
+        labels: [{ name: 'ready-for-agent' }],
+        pull_request: { url: 'https://api.github.com/repos/acme/self-loop/pulls/42' },
+      },
+      comment: {
+        id: 9001,
+        body: '/loop 请修复验证失败的 gate',
+        html_url: 'https://github.com/acme/self-loop/pull/42#issuecomment-9001',
+      },
+    };
+    const response = await githubRequest(context.base, {
+      event: 'issue_comment',
+      delivery: 'delivery-review-comment',
+      payload,
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.event.kind, 'task.created');
+    assert.equal(body.event.status, 'pending');
+
+    const event = context.store.state.events[0];
+    assert.equal(event.externalId, 'GH-42-COMMENT-9001');
+    assert.deepEqual(event.labels, ['review-feedback', 'ready-for-agent']);
+    assert.equal(event.connector.prNumber, 42);
+    assert.equal(event.acceptance.length, 2);
+
+    context.engine.tick(Date.now());
+    const ticket = context.store.state.tickets.find(
+      (candidate) => candidate.externalId === 'GH-42-COMMENT-9001',
+    );
+    assert.ok(ticket);
+    assert.equal(ticket.connector.prNumber, 42);
+    assert.equal(ticket.acceptance.length, 2);
+  } finally {
+    await context.close();
+  }
+});
+
+test('GitHub review comments without a loop command stay as ignored context', async () => {
+  const context = await httpFixture();
+  try {
+    const response = await githubRequest(context.base, {
+      event: 'issue_comment',
+      delivery: 'delivery-review-context',
+      payload: {
+        action: 'created',
+        repository: { full_name: 'acme/self-loop' },
+        sender: { login: 'reviewer' },
+        issue: {
+          number: 43,
+          title: 'Discussion only',
+          pull_request: {},
+        },
+        comment: { id: 9002, body: 'Looks good to me' },
+      },
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.event.kind, 'github.issue_comment.comment');
+    assert.equal(body.event.status, 'ignored');
+    assert.match(body.event.ignoredReason, /\/loop/);
+  } finally {
+    await context.close();
+  }
+});
+
 test('GitHub webhook rejects invalid signatures without writing events', async () => {
   const context = await httpFixture();
   try {
@@ -871,6 +946,16 @@ test('token files are stable, rotation invalidates old credentials, and audits i
     const audit = await fetch(`${context.base}/api/audit`).then((response) => response.json());
     assert.ok(audit.consoleAudit.some((entry) => entry.action === 'auth.rotated'));
     assert.ok(audit.consoleAudit.some((entry) => entry.action === 'event.injected'));
+    const filtered = await fetch(
+      `${context.base}/api/audit?action=event.injected&ok=true&limit=1`,
+    ).then((response) => response.json());
+    assert.equal(filtered.entries.length, 1);
+    assert.equal(filtered.entries[0].action, 'event.injected');
+    assert.equal(filtered.entries[0].ok, true);
+    const rejected = await fetch(
+      `${context.base}/api/audit?ok=false&q=events`,
+    ).then((response) => response.json());
+    assert.ok(rejected.entries.some((entry) => entry.action === 'auth.rejected'));
   } finally {
     await context.close();
   }
@@ -1257,6 +1342,35 @@ test('project mode routes GitHub webhooks to the project that owns the repositor
     assert.equal(second.events.length, 2);
     assert.equal(second.events.at(-1).type, 'issue');
     assert.equal(second.events.at(-1).action, 'opened');
+
+    const review = await githubRequest(context.base, {
+      event: 'issue_comment',
+      delivery: 'delivery-pr-comment-two',
+      secret: 'repo-two-secret',
+      payload: {
+        action: 'created',
+        repository: { full_name: 'acme/two' },
+        sender: { login: 'reviewer' },
+        issue: {
+          number: 71,
+          title: 'Webhook issue #71',
+          pull_request: {},
+        },
+        comment: {
+          id: 771,
+          body: '/loop address the review comment',
+        },
+      },
+    });
+    assert.equal(review.status, 202);
+    const afterReview = JSON.parse(readFileSync(
+      join(context.dirs[1], '.loop', 'inbox.json'),
+      'utf8',
+    ));
+    const task = afterReview.events.find((event) => event.type === 'task');
+    assert.ok(task);
+    assert.equal(task.payload.externalId, 'GH-71-COMMENT-771');
+    assert.equal(task.payload.connector.prNumber, 71);
   } finally {
     await context.close();
     if (previous === undefined) delete process.env.TEST_GH_TWO;
@@ -1379,6 +1493,34 @@ test('automations, metrics, and observability are exposed through the console AP
     assert.equal(run.status, 200);
     assert.ok((await run.json()).event.id);
 
+    const edited = await fetch(`${context.base}/api/automations/${id}`, {
+      method: 'PATCH',
+      headers: writeHeaders({ token: context.token }),
+      body: JSON.stringify({
+        name: 'Edited API automation',
+        scheduleType: 'cron',
+        cron: '0 9 * * 1-5',
+        timezone: 'Asia/Shanghai',
+      }),
+    });
+    assert.equal(edited.status, 200);
+    const editedBody = await edited.json();
+    assert.equal(editedBody.automation.scheduleType, 'cron');
+    assert.equal(editedBody.automation.name, 'Edited API automation');
+
+    const history = await fetch(`${context.base}/api/automations/${id}/history`)
+      .then((res) => res.json());
+    assert.equal(history.runs.length, 1);
+    assert.ok(history.runs[0].eventId);
+
+    const removed = await fetch(`${context.base}/api/automations/${id}`, {
+      method: 'DELETE',
+      headers: writeHeaders({ token: context.token }),
+    });
+    assert.equal(removed.status, 200);
+    const afterDelete = await fetch(`${context.base}/api/automations`).then((res) => res.json());
+    assert.equal(afterDelete.automations.some((item) => item.id === id), false);
+
     const observability = await fetch(`${context.base}/api/observability`).then((res) => res.json());
     assert.equal(typeof observability.queues.inboxPending, 'number');
     assert.equal(typeof observability.workers.online, 'number');
@@ -1402,6 +1544,12 @@ test('the console shell is bilingual, themeable, and exposes accessibility landm
     assert.match(app, /aria-current="page"/);
     assert.match(app, /id="main-content"/);
     assert.match(app, /term-zh/);
+    assert.match(app, /function observabilityView/);
+    assert.match(app, /Queue health · 队列健康/);
+    assert.match(app, /Graphite · 石墨/);
+    assert.match(app, /Ocean · 深海/);
+    assert.match(app, /Plum · 梅子/);
+    assert.match(app, /Paper · 纸张/);
   } finally {
     await context.close();
   }
@@ -1444,6 +1592,11 @@ test('project mode registers a remote worker and completes a claimed ticket', as
       },
     );
     assert.equal(completed.ticket.state, 'verifying');
+
+    const rotated = await context.backend.rotateRemoteWorker(registered.worker.id);
+    assert.match(rotated.token, /^sw_/);
+    const revoked = await context.backend.revokeRemoteWorker(registered.worker.id);
+    assert.equal(revoked.remoteWorkers.length, 0);
   } finally {
     await context.close();
   }
