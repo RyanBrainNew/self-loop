@@ -8,6 +8,8 @@ import { resolveRepo, resolveSettings } from '../scripts/lib.mjs';
 import { resolveExecutorAdapter } from '../scripts/executors.mjs';
 import { loadOutbox, outboxSummary } from '../scripts/outbox.mjs';
 import { loadJiraCursor, syncJira } from './connectors/jira.mjs';
+import * as automationStore from '../scripts/automations.mjs';
+import { listWorkers } from '../scripts/workers.mjs';
 
 const execFileAsync = promisify(execFile);
 const skillRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -34,6 +36,8 @@ export const PROJECT_CAPABILITIES = Object.freeze({
   projectAdd: true,
   projectRemove: true,
   connectorSync: true,
+  automationWrite: true,
+  remoteWorkerWrite: true,
   authRotate: true,
 });
 
@@ -856,6 +860,8 @@ export class ProjectBackend {
         },
       },
     };
+    const automations = automationStore.loadAutomations(entry).automations;
+    const remoteWorkers = listWorkers(entry.settings, this.now());
     const snapshot = {
       version: 1,
       meta,
@@ -866,6 +872,8 @@ export class ProjectBackend {
       attempts,
       deliveries,
       workers,
+      automations,
+      remoteWorkers,
       audit,
       capabilities: this.capabilities,
       projects: this.projects(),
@@ -958,11 +966,11 @@ export class ProjectBackend {
     };
   }
 
-  async runRouter(args, { timeout = 180_000 } = {}) {
-    return this.runRouterFor(this.registry.current(), args, { timeout });
+  async runRouter(args, { timeout = 180_000, env = {} } = {}) {
+    return this.runRouterFor(this.registry.current(), args, { timeout, env });
   }
 
-  async runRouterFor(entry, args, { timeout = 180_000 } = {}) {
+  async runRouterFor(entry, args, { timeout = 180_000, env = {} } = {}) {
     try {
       const result = await execFileAsync(
         process.execPath,
@@ -974,6 +982,7 @@ export class ProjectBackend {
           maxBuffer: 4 * 1024 * 1024,
           env: {
             ...this.registry.env,
+            ...env,
             SELF_LOOP_REPO: entry.repoRoot,
             GITHUB_REPOSITORY: entry.githubRepo || '',
           },
@@ -999,6 +1008,102 @@ export class ProjectBackend {
       detail: result.status === 3 ? '没有可领取的 Issue' : 'Router tick 完成',
       output: result.stdout.slice(-4000),
     };
+  }
+
+  async addAutomation(input) {
+    const result = await this.runRouter([
+      'automations',
+      'add',
+      '--data',
+      JSON.stringify(input),
+    ]);
+    let automation = null;
+    try {
+      automation = JSON.parse(result.stdout);
+    } catch {}
+    return { automation, automations: this.snapshot().automations };
+  }
+
+  async toggleAutomation(id) {
+    const result = await this.runRouter(['automations', 'toggle', '--id', String(id)]);
+    let automation = null;
+    try {
+      automation = JSON.parse(result.stdout);
+    } catch {}
+    return { automation, automations: this.snapshot().automations };
+  }
+
+  async runAutomation(id) {
+    const result = await this.runRouter(['automations', 'run', '--id', String(id)]);
+    let payload = null;
+    try {
+      payload = JSON.parse(result.stdout);
+    } catch {}
+    return {
+      automation: payload?.automation || null,
+      event: payload?.event || null,
+      automations: this.snapshot().automations,
+    };
+  }
+
+  async runDueAutomations(entry = this.registry.current()) {
+    const result = await this.runRouterFor(entry, ['automations', 'due']);
+    let payload = null;
+    try {
+      payload = JSON.parse(result.stdout);
+    } catch {}
+    return payload || { ran: 0, events: [] };
+  }
+
+  async registerRemoteWorker(input) {
+    const result = await this.runRouter([
+      'workers',
+      'register',
+      '--data',
+      JSON.stringify(input),
+    ]);
+    let payload = null;
+    try {
+      payload = JSON.parse(result.stdout);
+    } catch {}
+    return {
+      ...payload,
+      remoteWorkers: this.snapshot().remoteWorkers || [],
+    };
+  }
+
+  async heartbeatRemoteWorker(token, patch = {}) {
+    const result = await this.runRouter(
+      ['workers', 'heartbeat', '--data', JSON.stringify(patch)],
+      { env: { SELF_LOOP_WORKER_TOKEN: token } },
+    );
+    let worker = null;
+    try {
+      worker = JSON.parse(result.stdout);
+    } catch {}
+    return { worker };
+  }
+
+  async claimRemoteWorker(token) {
+    const result = await this.runRouter(
+      ['claim'],
+      { env: { SELF_LOOP_WORKER_TOKEN: token } },
+    );
+    return JSON.parse(result.stdout);
+  }
+
+  async completeRemoteWorker(token, ticketNumber, result) {
+    const output = await this.runRouter(
+      [
+        'complete',
+        '--ticket',
+        String(ticketNumber),
+        '--data',
+        JSON.stringify(result),
+      ],
+      { env: { SELF_LOOP_WORKER_TOKEN: token } },
+    );
+    return JSON.parse(output.stdout);
   }
 
   async ingestConnectorEvent(input, source, entry = this.registry.current()) {

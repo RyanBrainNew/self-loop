@@ -7,6 +7,8 @@ export const DEMO_CAPABILITIES = Object.freeze({
   pause: true,
   injectEvent: true,
   sourceWrite: true,
+  automationWrite: true,
+  remoteWorkerWrite: false,
   workerWrite: true,
   configWrite: true,
   ticketAnswer: true,
@@ -46,6 +48,7 @@ export class DemoBackend {
     const snapshot = this.store.snapshot();
     snapshot.capabilities = this.capabilities;
     snapshot.projects = this.projects();
+    snapshot.automations = snapshot.automations || [];
     snapshot.health = snapshot.health || {
       status: snapshot.meta.paused ? 'paused' : 'live',
       lastTickAt: snapshot.meta.lastTickAt,
@@ -94,6 +97,21 @@ export class DemoBackend {
       ...input,
       sourceId: source.id,
     });
+  }
+
+  addAutomation(input) {
+    const automation = this.engine.addAutomation(input);
+    return { automation, automations: this.store.state.automations };
+  }
+
+  toggleAutomation(id) {
+    const automation = this.engine.toggleAutomation(id);
+    return { automation, automations: this.store.state.automations };
+  }
+
+  runAutomation(id) {
+    const result = this.engine.runAutomation(id);
+    return { ...result, automations: this.store.state.automations };
   }
 
   answerTicket(id, answer, actor) {

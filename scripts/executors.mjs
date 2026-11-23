@@ -21,6 +21,12 @@ function commandParts(configured) {
   return { file: value, args: [], shell: Boolean(value) };
 }
 
+function shellQuote(value) {
+  const text = String(value);
+  if (process.platform === 'win32') return `"${text.replace(/"/g, '\\"')}"`;
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
 function inferredAdapter(command) {
   const name = basename(String(Array.isArray(command) ? command[0] || '' : command || ''))
     .replace(/\.(exe|cmd|bat|ps1)$/i, '')
@@ -44,7 +50,7 @@ const ADAPTER_DEFAULTS = Object.freeze({
     prompt: (workReference) => workReference,
   },
   codex: {
-    args: ['exec', '--full-auto'],
+    args: ['exec', '-s', 'workspace-write'],
     prompt: protocolPrompt,
   },
   claude: {
@@ -65,6 +71,7 @@ export function buildExecutorInvocation({
   settings,
   workReference,
   prompt,
+  writableDirs = [],
 } = {}) {
   const configured = settings?.executor?.command;
   if (!configured || (Array.isArray(configured) && configured.length === 0)) return null;
@@ -77,11 +84,20 @@ export function buildExecutorInvocation({
     || extraArgs.length > 0;
   const defaultArgs = commandAlreadyHasArgs ? [] : defaults.args;
   const finalPrompt = prompt || (commandAlreadyHasArgs ? workReference : defaults.prompt(workReference));
+  const writableArgs = adapter === 'codex'
+    ? writableDirs.flatMap((dir) => ['--add-dir', String(dir)])
+    : [];
+  const args = [...command.args, ...defaultArgs, ...writableArgs, ...extraArgs, finalPrompt];
+  const tail = [...defaultArgs, ...writableArgs, ...extraArgs, finalPrompt];
+  const shellCommand = command.shell
+    ? [command.file, ...tail.map(shellQuote)].filter(Boolean).join(' ')
+    : null;
   return {
     adapter,
     kind: adapter,
     file: command.file,
-    args: [...command.args, ...defaultArgs, ...extraArgs, finalPrompt],
+    args,
+    command: shellCommand,
     shell: command.shell,
     timeoutMs: settings.executor.timeoutMinutes * 60 * 1000,
     capabilities: settings.executor.capabilities,

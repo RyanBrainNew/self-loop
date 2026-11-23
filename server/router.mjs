@@ -764,6 +764,105 @@ export class RouterEngine {
     return source;
   }
 
+  addAutomation(input = {}) {
+    const everyMinutes = Math.max(1, Number(input.everyMinutes) || 60);
+    const automation = {
+      id: makeId('aut'),
+      name: String(input.name || input.title || 'Scheduled task'),
+      title: String(input.title || input.name || 'Scheduled task'),
+      body: String(input.body || ''),
+      acceptance: Array.isArray(input.acceptance)
+        ? input.acceptance.map(String).filter(Boolean)
+        : String(input.acceptance || '')
+          .split(/[;\n]/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+      everyMinutes,
+      schedule: String(input.schedule || `每 ${everyMinutes} 分钟`),
+      priority: String(input.priority || 'normal'),
+      labels: Array.isArray(input.labels) ? input.labels.map(String) : ['automation'],
+      enabled: input.enabled !== false,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      lastRunAt: null,
+      nextRunAt: nowIso(),
+      lastEventId: null,
+    };
+    this.state.automations.push(automation);
+    appendAudit(this.state, {
+      action: 'automation.created',
+      entity: 'automation',
+      entityId: automation.id,
+      detail: `新增定时自动化：${automation.name}`,
+      tone: 'success',
+    }, this.now());
+    this.store.save();
+    return automation;
+  }
+
+  toggleAutomation(id) {
+    const automation = this.state.automations.find((item) => item.id === id);
+    if (!automation) throw new Error(`unknown automation: ${id}`);
+    automation.enabled = !automation.enabled;
+    automation.updatedAt = nowIso();
+    automation.nextRunAt = automation.enabled
+      ? new Date(this.now() + automation.everyMinutes * 60_000).toISOString()
+      : automation.nextRunAt;
+    appendAudit(this.state, {
+      action: automation.enabled ? 'automation.enabled' : 'automation.paused',
+      entity: 'automation',
+      entityId: automation.id,
+      detail: `${automation.name} ${automation.enabled ? '已启用' : '已暂停'}`,
+      tone: automation.enabled ? 'success' : 'warn',
+    }, this.now());
+    this.store.save();
+    return automation;
+  }
+
+  runAutomation(id, now = this.now()) {
+    const automation = this.state.automations.find((item) => item.id === id);
+    if (!automation) throw new Error(`unknown automation: ${id}`);
+    if (!this.state.sources.some((source) => source.id === 'src_cron')) {
+      this.state.sources.push({
+        id: 'src_cron',
+        name: 'Scheduler',
+        kind: 'cron',
+        status: 'healthy',
+        createdAt: nowIso(now),
+        lastEventAt: null,
+        eventCount: 0,
+        health: 'Automation scheduler',
+        config: { schedule: 'automation' },
+      });
+    }
+    const stamp = nowIso(now);
+    const event = this.ingestEvent({
+      sourceId: 'src_cron',
+      kind: 'task.created',
+      title: automation.title,
+      body: automation.body,
+      externalId: `automation:${automation.id}:${stamp}`,
+      dedupeKey: `automation:${automation.id}:${stamp}`,
+      acceptance: automation.acceptance,
+      priority: automation.priority,
+      labels: ['automation', ...(automation.labels || [])],
+      connector: { automationId: automation.id },
+    }, now);
+    automation.lastRunAt = stamp;
+    automation.nextRunAt = new Date(now + automation.everyMinutes * 60_000).toISOString();
+    automation.updatedAt = stamp;
+    automation.lastEventId = event.event.id;
+    appendAudit(this.state, {
+      action: 'automation.run',
+      entity: 'automation',
+      entityId: automation.id,
+      detail: `手动运行自动化：${automation.name}`,
+      tone: 'info',
+    }, now);
+    this.store.save();
+    return { automation, event: event.event, duplicate: event.duplicate };
+  }
+
   updateSource(id, patch = {}) {
     const source = this.state.sources.find((candidate) => candidate.id === id);
     if (!source) throw new Error(`unknown source: ${id}`);

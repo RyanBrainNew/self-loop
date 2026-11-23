@@ -63,12 +63,88 @@ const STATE_BADGE = {
   dropped: 'badge-muted',
 };
 
-const PRIORITY_LABEL = {
-  urgent: 'urgent',
-  high: 'high',
-  normal: 'normal',
-  low: 'low',
+const STATE_TERM = {
+  queued: 'queued',
+  claimed: 'claimed',
+  working: 'working',
+  verifying: 'verifying',
+  awaiting_review: 'review',
+  blocked: 'blocked',
+  failed: 'failed',
+  done: 'done',
+  dropped: 'dropped',
 };
+
+const PRIORITY_LABEL = {
+  urgent: 'urgent · 紧急',
+  high: 'high · 高',
+  normal: 'normal · 普通',
+  low: 'low · 低',
+};
+
+const TERMS = {
+  overview: ['Overview', '总览', '一页看清来源、收件箱、任务、执行器、验证器和发件箱。'],
+  source: ['Source', '来源', '外部系统或定时器，例如 GitHub、Jira、Slack，把事件送进 Inbox。'],
+  sources: ['Sources', '来源', '所有已接入的外部系统和连接器。'],
+  connector: ['Connector', '连接器', '负责验签、拉取、字段映射，把外部消息变成统一事件。'],
+  inbox: ['Inbox', '收件箱', '刚收到、还没被 Router 处理的事件列表。'],
+  router: ['Router', '调度器', '决定哪个任务何时执行，并独占 Ticket 状态的写权限。'],
+  ticket: ['Ticket', '任务单', '一张可被领取、执行、验证和交付的工作单。'],
+  tickets: ['Tickets', '任务单', '所有任务单及其状态。'],
+  worker: ['Worker', '执行器', '真正执行任务的 agent 或命令，例如 Codex、Claude。'],
+  workers: ['Workers', '执行器', '执行器池，包含在线、忙碌、暂停和远程注册信息。'],
+  verifier: ['Verifier', '验证器', '在独立工作区重跑验收命令，防止 Worker 自证。'],
+  outbox: ['Outbox', '发件箱', '任务结束后要送回 GitHub、Jira、Slack 或 Webhook 的消息。'],
+  attempt: ['Attempt', '执行轮次', '同一张任务单的一次执行记录，包含日志、结果和验证证据。'],
+  lease: ['Lease', '执行租约', 'Router 给 Worker 的限时执行许可，超时会释放并发槽。'],
+  gate: ['Gate', '门禁', '必须满足的规则，例如验收标准、独立验证或人工确认。'],
+  policy: ['Policy', '策略', '标签、优先级、并发和人工介入规则。'],
+  project: ['Project', '项目', '一个被控制台管理的代码仓库。'],
+  projects: ['Projects', '项目', '统一管理多个仓库，并在控制台内切换。'],
+  demo: ['Demo', '演示', '使用模拟数据展示完整界面，不会改动真实仓库。'],
+  projectMode: ['Project mode', '项目模式', '读取真实 .loop 状态，写操作交给 Router CLI。'],
+  live: ['Live', '运行中', 'Router 正在自动或手动推进任务。'],
+  paused: ['Paused', '已暂停', '暂时不领取新任务，已有任务不会被删除。'],
+  queued: ['Queued', '排队中', '任务已创建，等待空闲执行器。'],
+  claimed: ['Claimed', '已领取', '任务已被某个执行器领取。'],
+  working: ['Working', '执行中', '执行器正在修改代码或处理任务。'],
+  verifying: ['Verifying', '验证中', '独立验证器正在重跑验收命令。'],
+  review: ['Review', '待审阅', '验证通过，等待人工查看 PR 或结果。'],
+  blocked: ['Blocked', '已阻塞', '需要人工回答、修复环境或决定下一步。'],
+  failed: ['Failed', '失败', '执行或验证失败，可能需要重试。'],
+  done: ['Done', '已完成', '任务已交付并结束。'],
+  dropped: ['Dropped', '已放弃', '任务被关闭或不再需要执行。'],
+  pending: ['Pending', '待处理', '还在队列里，尚未完成。'],
+  consumed: ['Consumed', '已消费', '事件已经被 Router 处理。'],
+  ignored: ['Ignored', '已忽略', '事件不满足规则，没有创建任务。'],
+  sent: ['Sent', '已发送', '消息已经成功送到外部系统。'],
+  dead: ['Dead', '死信', '多次重试仍失败，需要人工重投。'],
+  healthy: ['Healthy', '健康', '连接器或执行器工作正常。'],
+  degraded: ['Degraded', '降级', '连接器可用但存在错误或缺少凭据。'],
+  webhook: ['Webhook', '回调入口', '外部系统主动推送事件的 HTTP 地址。'],
+  executor: ['Executor', '执行后端', '实际启动 Codex、Claude 或自定义命令的适配层。'],
+  adapter: ['Adapter', '适配器', '把统一 Worker 协议翻译成某个执行器的命令行。'],
+  automation: ['Automation', '定时自动化', '按计划自动创建任务，例如每天检查依赖或生成周报。'],
+  automations: ['Automations', '定时自动化', '所有定时任务定义、下一次运行时间和历史。'],
+  remoteWorker: ['Remote worker', '远程执行器', '在另一台机器上注册、心跳并领取任务的执行器。'],
+  heartbeat: ['Heartbeat', '心跳', '执行器定期报到，证明自己仍然在线。'],
+  metrics: ['Metrics', '指标', '队列长度、任务状态、执行器健康等可监控数字。'],
+  glossary: ['Glossary', '术语表', '把界面里的英文术语翻译成中文，并解释它解决什么问题。'],
+};
+
+function term(key, fallback = '') {
+  const entry = TERMS[key];
+  if (!entry) return esc(fallback || key);
+  return `${esc(entry[0])}<span class="term-zh">${esc(entry[1])}</span>`;
+}
+
+function termText(key) {
+  return TERMS[key]?.[1] || key;
+}
+
+function termHelp(key) {
+  return TERMS[key]?.[2] || '';
+}
 
 const state = {
   data: null,
@@ -178,7 +254,7 @@ function stageClass(value) {
 }
 
 function stateBadge(value) {
-  return `<span class="badge ${STATE_BADGE[value] || 'badge-muted'}">${esc(STATE_LABEL[value] || value)}</span>`;
+  return `<span class="badge ${STATE_BADGE[value] || 'badge-muted'}">${esc(STATE_LABEL[value] || value)}<span class="term-zh">${esc(termText(STATE_TERM[value] || value))}</span></span>`;
 }
 
 function priorityClass(value) {
@@ -204,7 +280,7 @@ function eventBadge(value) {
     consumed: 'badge-green',
     ignored: 'badge-muted',
   };
-  return `<span class="badge ${map[value] || 'badge-muted'}">${esc(value)}</span>`;
+  return `<span class="badge ${map[value] || 'badge-muted'}">${esc(value)}<span class="term-zh">${esc(termText(value))}</span></span>`;
 }
 
 function deliveryBadge(value) {
@@ -215,14 +291,14 @@ function deliveryBadge(value) {
     failed: 'badge-red',
     dead: 'badge-red',
   };
-  return `<span class="badge ${map[value] || 'badge-muted'}">${esc(value)}</span>`;
+  return `<span class="badge ${map[value] || 'badge-muted'}">${esc(value)}<span class="term-zh">${esc(termText(value))}</span></span>`;
 }
 
 function workerBadge(worker) {
-  if (worker.paused) return '<span class="badge badge-amber">paused</span>';
-  if (worker.status === 'offline') return '<span class="badge badge-muted">offline</span>';
-  if (worker.status === 'busy') return '<span class="badge badge-blue">busy</span>';
-  return '<span class="badge badge-green">online</span>';
+  if (worker.paused) return `<span class="badge badge-amber">paused<span class="term-zh">${esc(termText('paused'))}</span></span>`;
+  if (worker.status === 'offline') return '<span class="badge badge-muted">offline<span class="term-zh">离线</span></span>';
+  if (worker.status === 'busy') return '<span class="badge badge-blue">busy<span class="term-zh">忙碌</span></span>';
+  return '<span class="badge badge-green">online<span class="term-zh">在线</span></span>';
 }
 
 function computeCounts(data) {
@@ -248,27 +324,64 @@ function computeCounts(data) {
 }
 
 function pageTitle(route) {
+  if (route.name === 'ticket') return `${term('ticket')} <span class="term-zh">详情</span>`;
+  const key = {
+    overview: 'overview',
+    inbox: 'inbox',
+    tickets: 'tickets',
+    outbox: 'outbox',
+    sources: 'sources',
+    workers: 'workers',
+    policy: 'policy',
+    projects: 'projects',
+    automations: 'automations',
+    glossary: 'glossary',
+  }[route.name] || 'overview';
+  return term(key);
+}
+
+function pageTitleText(route) {
   if (route.name === 'ticket') return 'Ticket 详情';
-  return {
-    overview: 'Overview',
-    inbox: 'Inbox',
-    tickets: 'Tickets',
-    outbox: 'Outbox',
-    sources: 'Sources',
-    workers: 'Workers',
-    policy: 'Policy',
-    projects: 'Projects',
-  }[route.name] || 'Overview';
+  const labels = {
+    overview: 'Overview 总览',
+    inbox: 'Inbox 收件箱',
+    tickets: 'Tickets 任务单',
+    outbox: 'Outbox 发件箱',
+    sources: 'Sources 来源',
+    workers: 'Workers 执行器',
+    policy: 'Policy 策略',
+    projects: 'Projects 项目',
+    automations: 'Automations 定时自动化',
+    glossary: 'Glossary 术语表',
+  };
+  return labels[route.name] || 'Overview 总览';
 }
 
 function navItem(name, label, iconName, count, route, tone = '') {
   const active =
     route.name === name || (name === 'tickets' && route.name === 'ticket');
-  return `<a class="nav-item ${active ? 'active' : ''}" href="#/${name}" data-route="#/${name}">
+  return `<a class="nav-item ${active ? 'active' : ''}" href="#/${name}" data-route="#/${name}" ${active ? 'aria-current="page"' : ''}>
     ${icon(iconName, 'nav-icon')}
-    <span class="nav-label">${label}</span>
+    <span class="nav-label">${label}<span class="nav-zh">${esc(termText(labelKey(label)))}</span></span>
     ${count !== '' && count !== undefined ? `<span class="nav-count ${tone}">${count}</span>` : ''}
   </a>`;
+}
+
+function labelKey(label) {
+  const normalized = String(label).toLowerCase().replace(/\s+/g, '');
+  const map = {
+    projects: 'projects',
+    overview: 'overview',
+    inbox: 'inbox',
+    tickets: 'tickets',
+    outbox: 'outbox',
+    sources: 'sources',
+    workers: 'workers',
+    policy: 'policy',
+    automations: 'automations',
+    glossary: 'glossary',
+  };
+  return map[normalized] || normalized;
 }
 
 function shell() {
@@ -310,17 +423,20 @@ function shell() {
           <span class="badge ${caps.mode === 'project' ? 'badge-cyan' : 'badge-green'}">${caps.mode === 'project' ? 'project' : 'demo'}</span>
         </div>
         <nav class="nav" aria-label="主导航">
-          <div class="nav-section">Workspace</div>
+          <div class="nav-section">Workspace · 工作区</div>
           ${navItem('projects', 'Projects', 'projects', projects.items.length || '', route)}
-          <div class="nav-section">Control plane</div>
+          <div class="nav-section">Control plane · 控制面</div>
           ${navItem('overview', 'Overview', 'overview', counts.activeTickets, route)}
           ${navItem('inbox', 'Inbox', 'inbox', counts.pendingEvents, route, 'hot')}
           ${navItem('tickets', 'Tickets', 'tickets', counts.activeTickets, route)}
           ${navItem('outbox', 'Outbox', 'outbox', counts.deliveriesFailed, route, counts.deliveriesFailed ? 'danger' : '')}
-          <div class="nav-section">Runtime</div>
+          ${navItem('automations', 'Automations', 'clock', (data.automations || []).filter((item) => item.enabled).length || '', route)}
+          <div class="nav-section">Runtime · 运行时</div>
           ${navItem('sources', 'Sources', 'sources', counts.sources, route)}
           ${navItem('workers', 'Workers', 'workers', counts.workersOnline, route)}
           ${navItem('policy', 'Policy', 'policy', '', route)}
+          <div class="nav-section">Help · 帮助</div>
+          ${navItem('glossary', 'Glossary', 'search', '', route)}
         </nav>
         <div class="sidebar-foot">
           <div class="router-status">
@@ -347,16 +463,22 @@ function shell() {
             <div class="topbar-crumb">self-loop / ${route.name}${route.id ? ` / ${esc(route.id)}` : ''}</div>
           </div>
           <div class="topbar-spacer"></div>
+          <select class="theme-select-top" data-theme-select aria-label="选择主题" title="Theme · 主题">
+            <option value="graphite">Graphite · 石墨</option>
+            <option value="ocean">Ocean · 深海</option>
+            <option value="plum">Plum · 梅子</option>
+            <option value="paper">Paper · 纸张</option>
+          </select>
           <div class="topbar-meta">
             <span class="badge ${data.meta.paused ? 'badge-amber' : 'badge-green'}">${data.meta.paused ? 'paused' : 'live'}</span>
             <span class="badge badge-muted">${data.config.maxConcurrent} slots</span>
             <span class="badge badge-muted">${fmtTime(data.meta.lastTickAt)}</span>
           </div>
-          ${caps.pause ? `<button class="btn btn-ghost btn-sm" data-action="toggle-pause" type="button">${icon(data.meta.paused ? 'play' : 'pause')} ${data.meta.paused ? 'Resume' : 'Pause'}</button>` : ''}
-          <button class="btn btn-sm" data-action="tick" type="button">${icon('refresh')} ${caps.mode === 'project' ? 'Run tick' : 'Tick'}</button>
-          ${caps.injectEvent ? `<button class="btn btn-primary btn-sm" data-action="inject-event" type="button">${icon('plus')} Inject event</button>` : ''}
+          ${caps.pause ? `<button class="btn btn-ghost btn-sm" data-action="toggle-pause" type="button">${icon(data.meta.paused ? 'play' : 'pause')} ${data.meta.paused ? 'Resume · 继续' : 'Pause · 暂停'}</button>` : ''}
+          <button class="btn btn-sm" data-action="tick" type="button">${icon('refresh')} ${caps.mode === 'project' ? 'Run tick · 执行一轮' : 'Tick · 执行一轮'}</button>
+          ${caps.injectEvent ? `<button class="btn btn-primary btn-sm" data-action="inject-event" type="button">${icon('plus')} Inject event · 注入事件</button>` : ''}
         </header>
-        <main class="content">${view()}</main>
+        <main class="content" id="main-content" tabindex="-1">${view()}</main>
       </div>
     </div>
   `;
@@ -372,25 +494,27 @@ function view() {
   if (route.name === 'workers') return workersView();
   if (route.name === 'policy') return policyView();
   if (route.name === 'projects') return projectsView();
+  if (route.name === 'automations') return automationsView();
+  if (route.name === 'glossary') return glossaryView();
   return overviewView();
 }
 
 function flowStrip(data) {
   const counts = computeCounts(data);
   const steps = [
-    ['Sources', counts.sources, `${counts.sourcesHealthy} healthy`],
-    ['Inbox', counts.pendingEvents, 'pending events'],
-    ['Router', counts.activeTickets, `${data.config.maxConcurrent} slots`],
-    ['Workers', `${counts.workersBusy}/${counts.workersOnline}`, 'busy / online'],
-    ['Verifier', counts.verifying, 'in verification'],
-    ['Outbox', counts.deliveriesPending, `${counts.deliveriesFailed} failed`],
+    ['sources', counts.sources, `${counts.sourcesHealthy} healthy · 健康`],
+    ['inbox', counts.pendingEvents, 'pending events · 待处理事件'],
+    ['router', counts.activeTickets, `${data.config.maxConcurrent} slots · 并发槽`],
+    ['workers', `${counts.workersBusy}/${counts.workersOnline}`, 'busy / online · 忙碌/在线'],
+    ['verifier', counts.verifying, 'in verification · 验证中'],
+    ['outbox', counts.deliveriesPending, `${counts.deliveriesFailed} failed · 失败`],
   ];
   return `<div class="flow-strip">${steps
     .map(
       ([label, value, note], index) => `
         ${index ? `<div class="flow-arrow">${icon('chevron')}</div>` : ''}
         <div class="flow-step">
-          <div class="flow-step-label">${label}</div>
+          <div class="flow-step-label">${term(label)}</div>
           <div class="flow-step-value">${value}</div>
           <div class="flow-step-note">${esc(note)}</div>
         </div>`,
@@ -408,12 +532,12 @@ function kpi(label, value, foot, accent, iconName) {
 
 function pipeline(data) {
   const stages = [
-    ['Queued', ['queued'], 'var(--amber)', 'queued'],
-    ['Working', ['claimed', 'working'], 'var(--blue)', 'working'],
-    ['Verifying', ['verifying'], 'var(--purple)', 'verifying'],
-    ['Review', ['awaiting_review'], 'var(--cyan)', 'review'],
-    ['Blocked', ['blocked', 'failed'], 'var(--red)', 'blocked'],
-    ['Done', ['done', 'dropped'], 'var(--green)', 'done'],
+    ['queued', ['queued'], 'var(--amber)', 'queued'],
+    ['working', ['claimed', 'working'], 'var(--blue)', 'working'],
+    ['verifying', ['verifying'], 'var(--purple)', 'verifying'],
+    ['review', ['awaiting_review'], 'var(--cyan)', 'review'],
+    ['blocked', ['blocked', 'failed'], 'var(--red)', 'blocked'],
+    ['done', ['done', 'dropped'], 'var(--green)', 'done'],
   ];
   return `<div class="pipeline">${stages
     .map(([label, states, accent, filter]) => {
@@ -421,7 +545,7 @@ function pipeline(data) {
       return `<button class="pipeline-stage" style="--stage:${accent}" data-action="focus-tickets" data-filter="${filter}" type="button">
         <div class="stage-bar"></div>
         <div class="pipeline-count">${count}</div>
-        <div class="pipeline-label">${label}</div>
+        <div class="pipeline-label">${term(label)}</div>
       </button>`;
     })
     .join('')}</div>`;
@@ -505,8 +629,8 @@ function overviewView() {
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">控制面总览</h1>
-        <p class="page-sub">Source → Inbox → Router → Worker → Verifier → Outbox。所有状态从这里可追踪。</p>
+        <h1 class="page-title">控制面总览 <span class="page-title-en">Overview</span></h1>
+        <p class="page-sub">${term('source')} → ${term('inbox')} → ${term('router')} → ${term('worker')} → ${term('verifier')} → ${term('outbox')}。所有状态从这里可追踪。</p>
       </div>
       <div class="page-actions">
         <button class="btn" data-action="refresh" type="button">${icon('refresh')} 刷新</button>
@@ -529,18 +653,30 @@ function overviewView() {
     }
     ${flowStrip(data)}
     <div class="kpi-grid">
-      ${kpi('Inbox pending', counts.pendingEvents, `${counts.sources} sources connected`, 'var(--amber)', 'inbox')}
-      ${kpi('Active tickets', counts.activeTickets, `${data.config.maxConcurrent} worker slots`, 'var(--blue)', 'tickets')}
-      ${kpi('Awaiting review', counts.awaitingReview, 'PR ready for a human', 'var(--cyan)', 'check')}
-      ${kpi('Blocked', counts.blocked, 'needs a human decision', 'var(--red)', 'alert')}
-      ${kpi('Outbox failed', counts.deliveriesFailed, `${counts.deliveriesPending} pending deliveries`, counts.deliveriesFailed ? 'var(--red)' : 'var(--green)', 'outbox')}
+      ${kpi(`${term('inbox')} <span class="term-zh">待处理</span>`, counts.pendingEvents, `${counts.sources} sources connected · 个来源已连接`, 'var(--amber)', 'inbox')}
+      ${kpi(`${term('tickets')} <span class="term-zh">进行中</span>`, counts.activeTickets, `${data.config.maxConcurrent} worker slots · 个执行槽`, 'var(--blue)', 'tickets')}
+      ${kpi(`${term('review')} <span class="term-zh">待人工</span>`, counts.awaitingReview, 'PR ready for a human · 等待人工查看', 'var(--cyan)', 'check')}
+      ${kpi(`${term('blocked')} <span class="term-zh">需介入</span>`, counts.blocked, 'needs a human decision · 需要人工决定', 'var(--red)', 'alert')}
+      ${kpi(`${term('outbox')} <span class="term-zh">失败</span>`, counts.deliveriesFailed, `${counts.deliveriesPending} pending deliveries · 条待发送`, counts.deliveriesFailed ? 'var(--red)' : 'var(--green)', 'outbox')}
     </div>
     <div class="grid grid-2-1">
       <div class="stack">
         <section class="card">
           <div class="card-header">
-            <div><div class="card-title">Router pipeline</div><div class="card-sub">Ticket 状态分布 · 点击筛选</div></div>
-            <span class="badge badge-muted">${counts.activeTickets} active</span>
+            <div><div class="card-title">Observability · 可观测性</div><div class="card-sub">Prometheus 指标与当前队列健康</div></div>
+            <a class="badge badge-cyan" href="/metrics" target="_blank" rel="noreferrer">/metrics</a>
+          </div>
+          <div class="metric-grid">
+            <div class="metric-item"><span>Inbox pending</span><b>${counts.pendingEvents}</b><small>待处理事件</small></div>
+            <div class="metric-item"><span>Active tickets</span><b>${counts.activeTickets}</b><small>进行中任务</small></div>
+            <div class="metric-item"><span>Outbox pending</span><b>${counts.deliveriesPending}</b><small>待发送消息</small></div>
+            <div class="metric-item"><span>Workers online</span><b>${counts.workersOnline}</b><small>在线执行器</small></div>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-header">
+            <div><div class="card-title">${term('router')} pipeline · 任务流水线</div><div class="card-sub">Ticket 状态分布 · 点击筛选</div></div>
+            <span class="badge badge-muted">${counts.activeTickets} active · 进行中</span>
           </div>
           ${pipeline(data)}
         </section>
@@ -555,21 +691,21 @@ function overviewView() {
       <div class="stack">
         <section class="card">
           <div class="card-header">
-            <div><div class="card-title">Worker pool</div><div class="card-sub">在线 / 忙碌 / 暂停</div></div>
-            <span class="badge badge-green">${counts.workersOnline} online</span>
+            <div><div class="card-title">${term('workers')} pool · 执行器池</div><div class="card-sub">在线 / 忙碌 / 暂停</div></div>
+            <span class="badge badge-green">${counts.workersOnline} online · 在线</span>
           </div>
           ${workerList(data.workers)}
         </section>
         <section class="card">
           <div class="card-header">
-            <div><div class="card-title">Outbox health</div><div class="card-sub">投递状态分布</div></div>
-            <span class="badge ${counts.deliveriesFailed ? 'badge-red' : 'badge-green'}">${counts.deliveriesFailed} failed</span>
+            <div><div class="card-title">${term('outbox')} health · 发件箱健康</div><div class="card-sub">投递状态分布</div></div>
+            <span class="badge ${counts.deliveriesFailed ? 'badge-red' : 'badge-green'}">${counts.deliveriesFailed} failed · 失败</span>
           </div>
           ${outboxSummary(data.deliveries)}
         </section>
         <section class="card">
           <div class="card-header">
-            <div><div class="card-title">Focus</div><div class="card-sub">最需要人看的 Ticket</div></div>
+            <div><div class="card-title">Focus · 关注</div><div class="card-sub">最需要人看的 Ticket</div></div>
           </div>
           ${focusList(blocked, active)}
         </section>
@@ -597,8 +733,8 @@ function inboxView() {
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">Inbox</h1>
-        <p class="page-sub">事件流，不是任务列表。Router 消费事件后才会生成 Ticket。</p>
+        <h1 class="page-title">Inbox <span class="page-title-zh">收件箱</span></h1>
+        <p class="page-sub">事件流，不是任务列表。Router 消费事件后才会生成 Ticket（任务单）。</p>
       </div>
       <div class="page-actions">
         ${caps.injectEvent ? `<button class="btn btn-primary" data-action="inject-event" type="button">${icon('plus')} 注入事件</button>` : ''}
@@ -606,12 +742,12 @@ function inboxView() {
     </div>
     <section class="card">
       <div class="card-header">
-        ${filterChips('inbox', [['all', 'All'], ['pending', 'Pending'], ['consumed', 'Consumed'], ['ignored', 'Ignored']])}
-        <span class="badge badge-muted">${events.length} events</span>
+        ${filterChips('inbox', [['all', 'All · 全部'], ['pending', 'Pending · 待处理'], ['consumed', 'Consumed · 已消费'], ['ignored', 'Ignored · 已忽略']])}
+        <span class="badge badge-muted">${events.length} events · 个事件</span>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Time</th><th>Source</th><th>Event</th><th>Kind</th><th>Status</th><th>Ticket</th></tr></thead>
+          <thead><tr><th>Time 时间</th><th>Source 来源</th><th>Event 事件</th><th>Kind 类型</th><th>Status 状态</th><th>Ticket 任务单</th></tr></thead>
           <tbody>
             ${events
               .map(
@@ -667,8 +803,8 @@ function ticketsView() {
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">Tickets</h1>
-        <p class="page-sub">Router 是唯一写 Ticket 状态的角色。Worker 只写 Attempt 与 PR。</p>
+        <h1 class="page-title">Tickets <span class="page-title-zh">任务单</span></h1>
+        <p class="page-sub">Router 是唯一写 Ticket 状态的角色。Worker 只写 Attempt（执行记录）与 PR。</p>
       </div>
       <div class="page-actions">
         ${filterChips('tickets', [['all', 'All'], ['active', 'Active'], ['blocked', 'Blocked'], ['review', 'Review'], ['done', 'Done']])}
@@ -841,10 +977,10 @@ function ticketView(id) {
       </div>
     </div>
     <div class="meta-grid">
-      <div class="meta-box"><div class="meta-label">Source</div><div class="meta-value">${esc(ticket.sourceName)}</div><div class="meta-label" style="margin-top:4px">${esc(ticket.externalId)}</div></div>
-      <div class="meta-box"><div class="meta-label">Worker</div><div class="meta-value">${esc(ticket.workerName || worker?.name || 'unassigned')}</div><div class="meta-label" style="margin-top:4px">${ticket.lease ? `lease ${timeUntil(ticket.lease.expiresAt)}` : 'no lease'}</div></div>
-      <div class="meta-box"><div class="meta-label">Attempts</div><div class="meta-value">${attemptValue}/${ticket.maxAttempts}</div><div class="meta-label" style="margin-top:4px">${ticket.lastError ? 'last attempt failed' : attemptValue >= ticket.maxAttempts ? 'no retries left' : 'budget remaining'}</div></div>
-      <div class="meta-box"><div class="meta-label">PR</div><div class="meta-value">${ticket.pr ? `#${ticket.pr.number}` : '—'}</div><div class="meta-label" style="margin-top:4px">${ticket.pr ? 'awaiting human review' : 'not opened'}</div></div>
+      <div class="meta-box"><div class="meta-label">Source 来源</div><div class="meta-value">${esc(ticket.sourceName)}</div><div class="meta-label" style="margin-top:4px">${esc(ticket.externalId)}</div></div>
+      <div class="meta-box"><div class="meta-label">Worker 执行器</div><div class="meta-value">${esc(ticket.workerName || worker?.name || 'unassigned')}</div><div class="meta-label" style="margin-top:4px">${ticket.lease ? `lease 租约 ${timeUntil(ticket.lease.expiresAt)}` : 'no lease 无租约'}</div></div>
+      <div class="meta-box"><div class="meta-label">Attempts 轮次</div><div class="meta-value">${attemptValue}/${ticket.maxAttempts}</div><div class="meta-label" style="margin-top:4px">${ticket.lastError ? 'last attempt failed' : attemptValue >= ticket.maxAttempts ? 'no retries left' : 'budget remaining'}</div></div>
+      <div class="meta-box"><div class="meta-label">PR 合并请求</div><div class="meta-value">${ticket.pr ? `#${ticket.pr.number}` : '—'}</div><div class="meta-label" style="margin-top:4px">${ticket.pr ? 'awaiting human review' : 'not opened'}</div></div>
     </div>
     <div class="detail-grid">
       <div class="stack">
@@ -866,10 +1002,10 @@ function ticketView(id) {
           </div>
         </section>
         <section class="card">
-          <div class="card-header"><div><div class="card-title">Task Card</div><div class="card-sub">Router 交给 Worker 的最小上下文</div></div>${stateBadge(ticket.state)}</div>
+          <div class="card-header"><div><div class="card-title">Task Card · 任务卡</div><div class="card-sub">Router 交给 Worker 的最小上下文</div></div>${stateBadge(ticket.state)}</div>
           <div class="code">${esc(ticket.summary)}</div>
           <div class="split-line"></div>
-          <div class="meta-label">Acceptance</div>
+          <div class="meta-label">Acceptance 验收标准</div>
           <div class="list" style="margin-top:6px">
             ${(ticket.acceptance || [])
               .map(
@@ -878,16 +1014,16 @@ function ticketView(id) {
               .join('')}
           </div>
           <div class="split-line"></div>
-          <div class="meta-label">Scope</div>
+          <div class="meta-label">Scope 范围</div>
           <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">
             ${(ticket.scope || []).map((item) => `<span class="badge badge-muted mono">${esc(item)}</span>`).join('') || '<span class="dim">待 Planner 补全</span>'}
           </div>
           <div class="split-line"></div>
-          <div class="meta-label">Risk</div>
+          <div class="meta-label">Risk 风险</div>
           <div style="margin-top:6px"><span class="badge ${ticket.risk === 'high' ? 'badge-red' : ticket.risk === 'low' ? 'badge-green' : 'badge-amber'}">${esc(ticket.risk)}</span></div>
         </section>
         <section class="card">
-          <div class="card-header"><div><div class="card-title">Attempts & evidence</div><div class="card-sub">Worker 只写 Attempt，Verifier 只写证据</div></div><span class="badge badge-muted">${attempts.length}</span></div>
+          <div class="card-header"><div><div class="card-title">Attempts 执行记录 & Evidence 证据</div><div class="card-sub">Worker 只写 Attempt，Verifier 只写证据</div></div><span class="badge badge-muted">${attempts.length}</span></div>
           ${attempts.length ? attempts.map(attemptBlock).join('') : '<div class="inline-empty">还没有 Attempt</div>'}
         </section>
       </div>
@@ -1013,8 +1149,8 @@ function outboxView() {
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">Outbox</h1>
-        <p class="page-sub">投递队列，不是任务归档。消息会重试、失败、进入死信。</p>
+        <h1 class="page-title">Outbox <span class="page-title-zh">发件箱</span></h1>
+        <p class="page-sub">投递队列，不是任务归档。消息会重试、失败、进入死信（Dead）。</p>
       </div>
       <div class="page-actions">
         ${filterChips('outbox', [['all', 'All'], ['pending', 'Pending'], ['sent', 'Sent'], ['failed', 'Failed'], ['dead', 'Dead']])}
@@ -1047,10 +1183,10 @@ function outboxView() {
       ${kpi('Dead', data.deliveries.filter((d) => d.state === 'dead').length, '需要人工介入', 'var(--dim)', 'x')}
     </div>
     <section class="card">
-      <div class="card-header"><div><div class="card-title">Delivery queue</div><div class="card-sub">每个 Ticket 可以产生多条消息</div></div><span class="badge badge-muted">${deliveries.length}</span></div>
+          <div class="card-header"><div><div class="card-title">Delivery queue · 投递队列</div><div class="card-sub">每个 Ticket 可以产生多条消息</div></div><span class="badge badge-muted">${deliveries.length}</span></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Time</th><th>Ticket</th><th>Channel</th><th>Target</th><th>Kind</th><th>State</th><th>Attempts</th><th>Last error</th><th></th></tr></thead>
+          <thead><tr><th>Time 时间</th><th>Ticket 任务单</th><th>Channel 通道</th><th>Target 目标</th><th>Kind 类型</th><th>State 状态</th><th>Attempts 轮次</th><th>Last error 最后错误</th><th></th></tr></thead>
           <tbody>
             ${deliveries
               .map(
@@ -1080,7 +1216,7 @@ function sourcesView() {
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">Sources</h1>
+        <h1 class="page-title">Sources <span class="page-title-zh">来源与连接器</span></h1>
         <p class="page-sub">连接器把外部事件归一化为 task 事件；Router 仍独立执行授权、lease 与门禁。</p>
       </div>
       <div class="page-actions">
@@ -1101,10 +1237,10 @@ function sourcesView() {
             </div>
             <div class="source-health">${esc(source.health || '—')}</div>
             <div class="source-meta">
-              <div><div class="meta-label">Events</div><div class="meta-value">${source.eventCount || 0}</div></div>
-              <div><div class="meta-label">Last event</div><div class="meta-value">${source.lastEventAt ? timeAgo(source.lastEventAt) : '—'}</div></div>
-              <div><div class="meta-label">Config</div><div class="meta-value">${esc(source.config?.repo || source.config?.project || source.config?.path || source.config?.schedule || source.config?.channel || source.config?.note || 'default')}</div></div>
-              <div><div class="meta-label">Auth</div><div class="meta-value">${esc(source.config?.auth || 'connector')}</div></div>
+              <div><div class="meta-label">Events 事件</div><div class="meta-value">${source.eventCount || 0}</div></div>
+              <div><div class="meta-label">Last event 最后事件</div><div class="meta-value">${source.lastEventAt ? timeAgo(source.lastEventAt) : '—'}</div></div>
+              <div><div class="meta-label">Config 配置</div><div class="meta-value">${esc(source.config?.repo || source.config?.project || source.config?.path || source.config?.schedule || source.config?.channel || source.config?.note || 'default')}</div></div>
+              <div><div class="meta-label">Auth 认证</div><div class="meta-value">${esc(source.config?.auth || 'connector')}</div></div>
             </div>
             <div class="source-actions">
               ${caps.sourceWrite ? `<button class="btn btn-sm" data-action="toggle-source" data-id="${source.id}" type="button">${icon(source.status === 'paused' ? 'play' : 'pause')} ${source.status === 'paused' ? '恢复' : '暂停'}</button>` : ''}
@@ -1134,7 +1270,7 @@ function workersView() {
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">Workers</h1>
+        <h1 class="page-title">Workers <span class="page-title-zh">执行器</span></h1>
         <p class="page-sub">Router 接各种 Worker：Codex、Claude、Orca、CI。Worker 只执行一个 Task Card。</p>
       </div>
     </div>
@@ -1152,8 +1288,8 @@ function workersView() {
             </div>
             <div class="worker-health">${worker.currentTicketId ? `正在处理 ${esc(worker.currentTicketId)}` : worker.paused ? '暂停接单，不领取新 Ticket' : '空闲，等待 Router 派单'}</div>
             <div class="worker-meta">
-              <div><div class="meta-label">Heartbeat</div><div class="meta-value">${timeAgo(worker.lastHeartbeat)}</div></div>
-              <div><div class="meta-label">Capabilities</div><div class="meta-value">${esc((worker.capabilities || []).join(', ') || '—')}</div></div>
+              <div><div class="meta-label">Heartbeat 心跳</div><div class="meta-value">${timeAgo(worker.lastHeartbeat)}</div></div>
+              <div><div class="meta-label">Capabilities 能力</div><div class="meta-value">${esc((worker.capabilities || []).join(', ') || '—')}</div></div>
             </div>
             <div class="worker-actions">
               ${caps.workerWrite ? `<button class="btn btn-sm" data-action="toggle-worker" data-id="${worker.id}" type="button">${icon(worker.paused ? 'play' : 'pause')} ${worker.paused ? '恢复接单' : '暂停接单'}</button>` : '<span class="dim" style="font-size:10px">由 Router 调度 · 只读</span>'}
@@ -1162,6 +1298,32 @@ function workersView() {
         )
         .join('')}
     </div>
+    <section class="card" style="margin-top:14px">
+      <div class="card-header">
+        <div><div class="card-title">${term('remoteWorker')} registry · 远程执行器注册表</div><div class="card-sub">另一台机器通过 token 注册、心跳、claim 和 complete</div></div>
+        ${caps.remoteWorkerWrite ? `<button class="btn btn-sm" data-action="add-remote-worker" type="button">${icon('plus')} 注册远程执行器</button>` : ''}
+      </div>
+      ${
+        (data.remoteWorkers || []).length
+          ? `<div class="worker-grid">${data.remoteWorkers.map((worker) => `
+            <article class="worker-card ${worker.online === false ? 'paused' : ''}">
+              <div class="worker-head">
+                <div class="worker-icon">${icon('git')}</div>
+                <div style="min-width:0">
+                  <div class="worker-name">${esc(worker.name)}</div>
+                  <div class="worker-kind">${esc(worker.kind)} · concurrency ${worker.concurrency || 1}</div>
+                </div>
+                <span style="margin-left:auto">${workerBadge(worker)}</span>
+              </div>
+              <div class="worker-health">${worker.currentTicketId ? `正在处理 ${esc(worker.currentTicketId)}` : '等待 claim'}</div>
+              <div class="worker-meta">
+                <div><div class="meta-label">Heartbeat · 心跳</div><div class="meta-value">${timeAgo(worker.lastHeartbeatAt)}</div></div>
+                <div><div class="meta-label">Capabilities · 能力</div><div class="meta-value">${esc((worker.capabilities || []).join(', ') || '—')}</div></div>
+              </div>
+            </article>`).join('')}</div>`
+          : `<div class="inline-empty">还没有远程执行器。注册后会得到一次性 token，用 <code>router claim</code> / <code>router complete</code> 接入自己的机器。</div>`
+      }
+    </section>
     <section class="card" style="margin-top:14px">
       <div class="card-header"><div><div class="card-title">Worker 协议</div><div class="card-sub">与具体 agent runtime 解耦</div></div><span class="badge badge-muted">v0</span></div>
       <div class="flow-strip" style="margin-bottom:0">
@@ -1188,7 +1350,7 @@ function projectsView() {
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">Projects</h1>
+        <h1 class="page-title">Projects <span class="page-title-zh">项目</span></h1>
         <p class="page-sub">一个控制面统一管理多个仓库。切换只改变当前读取的 .loop 状态，不复制 Ticket。</p>
       </div>
       <div class="page-actions">
@@ -1277,6 +1439,88 @@ function projectsView() {
   `;
 }
 
+function glossaryView() {
+  const entries = Object.values(TERMS)
+    .slice()
+    .sort((left, right) => left[0].localeCompare(right[0]));
+  return `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">Glossary <span class="page-title-zh">术语表</span></h1>
+        <p class="page-sub">界面里的英文术语都在这里。每个词给出中文和一句话解释，非研发同学也能快速看懂。</p>
+      </div>
+    </div>
+    <section class="card">
+      <div class="card-header">
+        <div><div class="card-title">English → 中文</div><div class="card-sub">按英文字母排序 · 共 ${entries.length} 个术语</div></div>
+      </div>
+      <div class="glossary-grid">
+        ${entries.map(([en, zh, desc]) => `
+          <article class="glossary-item">
+            <div class="glossary-en">${esc(en)}</div>
+            <div class="glossary-zh">${esc(zh)}</div>
+            <p class="glossary-desc">${esc(desc)}</p>
+          </article>`).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function automationsView() {
+  const data = state.data;
+  const caps = data.capabilities || {};
+  const automations = data.automations || [];
+  return `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">Automations <span class="page-title-zh">定时自动化</span></h1>
+        <p class="page-sub">按计划自动创建任务。它只负责“产生事件”，是否执行仍由 Router 的授权、lease 和门禁决定。</p>
+      </div>
+      <div class="page-actions">
+        ${caps.automationWrite ? `<button class="btn btn-primary" data-action="add-automation" type="button">${icon('plus')} 新增自动化</button>` : ''}
+      </div>
+    </div>
+    ${
+      automations.length
+        ? `<div class="automation-grid">${automations.map((item) => `
+          <article class="card automation-card ${item.enabled ? '' : 'disabled'}">
+            <div class="automation-head">
+              <div>
+                <div class="automation-name">${esc(item.name || item.title || item.id)}</div>
+                <div class="automation-sub mono">${esc(item.schedule || `每 ${item.everyMinutes || 60} 分钟`)} · ${esc(item.source || 'schedule')}</div>
+              </div>
+              <span class="badge ${item.enabled ? 'badge-green' : 'badge-muted'}">${item.enabled ? 'enabled · 启用' : 'paused · 暂停'}</span>
+            </div>
+            <p class="automation-body">${esc(item.title || item.body || '')}</p>
+            <div class="automation-meta">
+              <span>下次 <b>${item.nextRunAt ? fmtDate(item.nextRunAt) : '—'}</b></span>
+              <span>上次 <b>${item.lastRunAt ? timeAgo(item.lastRunAt) : '—'}</b></span>
+            </div>
+            <div class="automation-actions">
+              ${caps.automationWrite ? `<button class="btn btn-sm" data-action="run-automation" data-id="${esc(item.id)}" type="button">${icon('play')} 立即运行</button>
+              <button class="btn btn-sm" data-action="toggle-automation" data-id="${esc(item.id)}" type="button">${icon(item.enabled ? 'pause' : 'play')} ${item.enabled ? '暂停' : '启用'}</button>` : ''}
+            </div>
+          </article>`).join('')}</div>`
+        : `<section class="card empty-state">
+            <div class="empty-icon">${icon('clock')}</div>
+            <div class="empty-title">还没有定时自动化</div>
+            <p class="empty-sub">例如：每天 09:00 检查依赖升级，或每周一生成项目周报。创建后到点会向 Inbox 写入一条 schedule 事件。</p>
+            ${caps.automationWrite ? `<button class="btn btn-primary" data-action="add-automation" type="button">${icon('plus')} 创建第一个自动化</button>` : ''}
+          </section>`
+    }
+    <section class="card" style="margin-top:16px">
+      <div class="card-header">
+        <div><div class="card-title">Automation 是什么？</div><div class="card-sub">和普通任务的唯一区别是“触发方式”</div></div>
+      </div>
+      <div class="explain-list">
+        <div><b>Automation · 定时自动化</b><span>按时间产生一条事件，例如每天检查一次依赖。</span></div>
+        <div><b>Schedule event · 计划事件</b><span>写入 Inbox 的事件，不会直接改 Ticket 状态。</span></div>
+        <div><b>Gate · 门禁</b><span>即使到点触发，也必须通过验收、独立验证和人工审阅。</span></div>
+      </div>
+    </section>
+  `;
+}
+
 function policyView() {
   const data = state.data;
   const caps = data.capabilities || {};
@@ -1285,7 +1529,7 @@ function policyView() {
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">Policy</h1>
+        <h1 class="page-title">Policy <span class="page-title-zh">策略与门禁</span></h1>
         <p class="page-sub">确定性控制面。LLM 可以建议，但不能授权、不能绕过门禁。</p>
       </div>
       <div class="page-actions">
@@ -1384,9 +1628,10 @@ function render() {
   const scrollY = window.scrollY;
   app.className = '';
   app.innerHTML = shell();
+  applyTheme(document.documentElement.dataset.theme || 'graphite');
   state.lastRoute = location.hash || '#/overview';
   if (previousRoute === state.lastRoute) window.scrollTo(0, scrollY);
-  document.title = `${pageTitle(state.route)} · self-loop console`;
+  document.title = `${pageTitleText(state.route)} · self-loop console`;
 }
 
 function toast(message, kind = 'success') {
@@ -1597,6 +1842,162 @@ function openSourceModal() {
   setTimeout(() => document.getElementById('src-name')?.focus(), 40);
 }
 
+function openAutomationModal() {
+  state.modal = 'automation';
+  modalRoot.innerHTML = `
+    <div class="modal-backdrop" data-backdrop="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <div>
+            <div class="modal-title" id="modal-title">新增定时自动化</div>
+            <div class="modal-sub">到点后向 Inbox 写入一条 task 事件；是否执行仍由 Router 的授权、lease 和门禁决定。</div>
+          </div>
+          <button class="btn btn-ghost btn-icon" data-action="close-modal" type="button" aria-label="关闭">${icon('x')}</button>
+        </div>
+        <form id="automation-form">
+          <div class="form-grid">
+            <div class="field">
+              <label for="auto-name">名称</label>
+              <input class="input" id="auto-name" required value="Daily dependency check">
+            </div>
+            <div class="field">
+              <label for="auto-every">间隔（分钟）</label>
+              <input class="input" id="auto-every" type="number" min="1" value="1440" required>
+            </div>
+            <div class="field full">
+              <label for="auto-title">任务标题</label>
+              <input class="input" id="auto-title" required value="检查依赖升级并生成安全报告">
+            </div>
+            <div class="field full">
+              <label for="auto-body">任务正文</label>
+              <textarea id="auto-body">扫描依赖清单，列出可升级项和安全公告。</textarea>
+            </div>
+            <div class="field full">
+              <label for="auto-acceptance">验收项（用分号分隔）</label>
+              <input class="input" id="auto-acceptance" value="列出高风险依赖; 给出升级建议">
+            </div>
+            <div class="field">
+              <label for="auto-priority">优先级</label>
+              <select id="auto-priority">
+                <option value="normal">normal · 普通</option>
+                <option value="high">high · 高</option>
+                <option value="urgent">urgent · 紧急</option>
+                <option value="low">low · 低</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="auto-labels">标签</label>
+              <input class="input" id="auto-labels" value="automation,dependencies">
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn" data-action="close-modal" type="button">取消</button>
+            <button class="btn btn-primary" type="submit">${icon('plus')} 创建自动化</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+  document.getElementById('automation-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const payload = {
+      name: document.getElementById('auto-name').value,
+      title: document.getElementById('auto-title').value,
+      body: document.getElementById('auto-body').value,
+      everyMinutes: Number(document.getElementById('auto-every').value),
+      acceptance: document.getElementById('auto-acceptance').value,
+      priority: document.getElementById('auto-priority').value,
+      labels: document.getElementById('auto-labels').value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    };
+    try {
+      await api('/api/automations', { method: 'POST', body: JSON.stringify(payload) });
+      closeModal();
+      await refresh();
+      toast('定时自动化已创建');
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  setTimeout(() => document.getElementById('auto-name')?.focus(), 40);
+}
+
+function openRemoteWorkerModal() {
+  state.modal = 'remote-worker';
+  modalRoot.innerHTML = `
+    <div class="modal-backdrop" data-backdrop="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <div>
+            <div class="modal-title" id="modal-title">注册远程执行器</div>
+            <div class="modal-sub">注册后只显示一次 token。远程机器用 token 心跳、claim 和 complete。</div>
+          </div>
+          <button class="btn btn-ghost btn-icon" data-action="close-modal" type="button" aria-label="关闭">${icon('x')}</button>
+        </div>
+        <form id="remote-worker-form">
+          <div class="form-grid">
+            <div class="field">
+              <label for="rwk-name">名称</label>
+              <input class="input" id="rwk-name" required value="build-box-01">
+            </div>
+            <div class="field">
+              <label for="rwk-kind">类型</label>
+              <input class="input" id="rwk-kind" value="codex">
+            </div>
+            <div class="field">
+              <label for="rwk-concurrency">并发</label>
+              <input class="input" id="rwk-concurrency" type="number" min="1" value="1">
+            </div>
+            <div class="field">
+              <label for="rwk-capabilities">能力（逗号分隔）</label>
+              <input class="input" id="rwk-capabilities" value="node,git,test">
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn" data-action="close-modal" type="button">取消</button>
+            <button class="btn btn-primary" type="submit">${icon('plus')} 注册并生成 token</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+  document.getElementById('remote-worker-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      const result = await api('/api/workers/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: document.getElementById('rwk-name').value,
+          kind: document.getElementById('rwk-kind').value,
+          concurrency: Number(document.getElementById('rwk-concurrency').value),
+          capabilities: document.getElementById('rwk-capabilities').value,
+        }),
+      });
+      modalRoot.innerHTML = `
+        <div class="modal-backdrop" data-backdrop="true">
+          <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <div class="modal-head">
+              <div><div class="modal-title" id="modal-title">远程执行器已注册</div><div class="modal-sub">token 只显示这一次，请立即保存。</div></div>
+              <button class="btn btn-ghost btn-icon" data-action="close-modal" type="button" aria-label="关闭">${icon('x')}</button>
+            </div>
+            <div class="code" id="rwk-token" data-copy-id="rwk-token" data-copy="${esc(result.token)}" style="white-space:pre-wrap">${esc(result.token)}</div>
+            <div class="modal-actions">
+              <button class="btn" data-action="copy" data-copy-id="rwk-token" data-copy="${esc(result.token)}" type="button">${icon('copy')} 复制 token</button>
+              <button class="btn btn-primary" data-action="close-modal" type="button">完成</button>
+            </div>
+          </div>
+        </div>
+      `;
+      await refresh();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  setTimeout(() => document.getElementById('rwk-name')?.focus(), 40);
+}
+
 function openProjectModal() {
   state.modal = 'project';
   modalRoot.innerHTML = `
@@ -1714,6 +2115,26 @@ async function handleAction(action, id) {
       toast(result.ok
         ? `Jira 同步完成：${result.fetched} 个 issue，${result.events} 个事件`
         : `Jira 同步失败：${result.error || result.status}`, result.ok ? 'success' : 'error');
+      return;
+    }
+    if (action === 'add-automation') {
+      openAutomationModal();
+      return;
+    }
+    if (action === 'add-remote-worker') {
+      openRemoteWorkerModal();
+      return;
+    }
+    if (action === 'toggle-automation') {
+      await api(`/api/automations/${id}/toggle`, { method: 'POST' });
+      await refresh();
+      toast('自动化状态已更新');
+      return;
+    }
+    if (action === 'run-automation') {
+      const result = await api(`/api/automations/${id}/run`, { method: 'POST' });
+      await refresh();
+      toast(result.event ? '自动化已触发，事件进入 Inbox' : '自动化已运行');
       return;
     }
     if (action === 'close-modal') return closeModal();
@@ -1844,6 +2265,10 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('change', async (event) => {
+  if (event.target.matches('[data-theme-select]')) {
+    applyTheme(event.target.value);
+    return;
+  }
   if (!event.target.matches('[data-project-select]')) return;
   try {
     await api('/api/projects/select', {
@@ -1859,6 +2284,18 @@ document.addEventListener('change', async (event) => {
   }
 });
 
+const THEME_KEY = 'self-loop-theme';
+
+function applyTheme(name) {
+  const theme = ['graphite', 'ocean', 'plum', 'paper'].includes(name) ? name : 'graphite';
+  document.documentElement.dataset.theme = theme;
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch {}
+  const select = document.querySelector('[data-theme-select]');
+  if (select) select.value = theme;
+}
+
 window.addEventListener('hashchange', () => {
   state.route = parseRoute();
   window.scrollTo(0, 0);
@@ -1867,6 +2304,7 @@ window.addEventListener('hashchange', () => {
 
 async function boot() {
   try {
+    applyTheme(localStorage.getItem(THEME_KEY) || 'graphite');
     state.data = await api('/api/state');
     if (!location.hash) history.replaceState(null, '', '#/overview');
     state.route = parseRoute();

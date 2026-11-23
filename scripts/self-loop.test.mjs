@@ -367,7 +367,7 @@ test('setup detects GitHub and executor without requiring another config file', 
       env: {},
       hasCommand: (name) => name === 'codex',
     }),
-    ['codex', 'exec', '--full-auto'],
+    ['codex', 'exec', '-s', 'workspace-write'],
   );
   assert.deepEqual(
     detectExecutor({
@@ -748,7 +748,7 @@ test('configured executors receive the installed WORK.md reference', async () =>
   };
   const arraySettings = resolveSettings(repo, {
     worktreeMode: 'external',
-    executorCommand: ['codex', 'exec', '--full-auto'],
+    executorCommand: ['codex', 'exec', '-s', 'workspace-write'],
   }, {});
   const fromArray = await executeDispatch({
     repoRoot: repo,
@@ -761,13 +761,16 @@ test('configured executors receive the installed WORK.md reference', async () =>
   assert.equal(fromArray.invocation.shell, false);
   assert.deepEqual(fromArray.invocation.args, [
     'exec',
-    '--full-auto',
+    '-s',
+    'workspace-write',
+    '--add-dir',
+    join(repo, '.git'),
     join(repoRoot, 'references', 'WORK.md'),
   ]);
 
   const stringSettings = resolveSettings(repo, {
     worktreeMode: 'external',
-    executorCommand: 'codex exec --full-auto',
+    executorCommand: 'codex exec -s workspace-write',
   }, {});
   const fromString = await executeDispatch({
     repoRoot: repo,
@@ -794,9 +797,21 @@ test('executor adapters expose built-in Codex and Claude invocation contracts', 
   assert.equal(resolveExecutorAdapter(codexSettings), 'codex');
   assert.equal(codexInvocation.adapter, 'codex');
   assert.equal(codexInvocation.shell, true);
-  assert.deepEqual(codexInvocation.args.slice(0, 2), ['exec', '--full-auto']);
+  assert.deepEqual(codexInvocation.args.slice(0, 3), ['exec', '-s', 'workspace-write']);
   assert.match(codexInvocation.args.at(-1), /Worker protocol at WORK\.md/);
   assert.equal(codexInvocation.timeoutMs, 45 * 60 * 1000);
+  const withWritable = buildExecutorInvocation({
+    settings: codexSettings,
+    workReference: 'WORK.md',
+    writableDirs: ['/repo/.git'],
+  });
+  assert.deepEqual(withWritable.args.slice(0, 5), [
+    'exec',
+    '-s',
+    'workspace-write',
+    '--add-dir',
+    '/repo/.git',
+  ]);
 
   const claudeSettings = resolveSettings(repo, {
     executorAdapter: 'claude',
