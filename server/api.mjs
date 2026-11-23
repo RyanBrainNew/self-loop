@@ -1,5 +1,7 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
+import { normalizeGitHubEvent } from './connectors/github.mjs';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -60,6 +62,57 @@ function readBody(req, limit = 1_000_000) {
   });
 }
 
+function readRawBody(req, limit = 1_000_000) {
+  return new Promise((resolvePromise, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error('body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolvePromise(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+function verifyGitHubSignature(secret, rawBody, signature) {
+  if (!secret || typeof signature !== 'string' || !signature.startsWith('sha256=')) {
+    return false;
+  }
+  const expected = Buffer.from(
+    `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`,
+  );
+  const actual = Buffer.from(signature);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function findGitHubSource(sources, repository) {
+  const githubSources = sources.filter((source) => source.kind === 'github');
+  if (repository) {
+    const matched = githubSources.find(
+      (source) =>
+        String(source.config?.repo || '').toLowerCase() === repository.toLowerCase(),
+    );
+    if (matched) return matched;
+    return githubSources.find((source) => !source.config?.repo) || null;
+  }
+  return githubSources.find((source) => source.status === 'healthy') || githubSources[0] || null;
+}
+
+function redactSource(source) {
+  const copy = structuredClone(source);
+  if (!copy.config || typeof copy.config !== 'object') return copy;
+  for (const key of ['secret', 'webhookSecret', 'token', 'apiToken', 'password']) {
+    if (copy.config[key]) copy.config[key] = '••••••';
+  }
+  return copy;
+}
+
 function parseLimit(value, fallback = 200) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
@@ -70,9 +123,15 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
   const clients = new Set();
   const publicRoot = resolve(publicDir);
 
+  function publicSnapshot() {
+    const snapshot = store.snapshot();
+    snapshot.sources = snapshot.sources.map(redactSource);
+    return snapshot;
+  }
+
   function broadcast() {
     if (!clients.size) return;
-    const payload = JSON.stringify(store.snapshot());
+    const payload = JSON.stringify(publicSnapshot());
     for (const response of [...clients]) {
       try {
         response.write(`event: state\ndata: ${payload}\n\n`);
@@ -107,7 +166,7 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
       'Access-Control-Allow-Origin': '*',
     });
     res.write(': connected\n\n');
-    res.write(`event: state\ndata: ${JSON.stringify(store.snapshot())}\n\n`);
+    res.write(`event: state\ndata: ${JSON.stringify(publicSnapshot())}\n\n`);
     clients.add(res);
     const keepAlive = setInterval(() => {
       try {
@@ -120,6 +179,69 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     req.on('close', () => {
       clearInterval(keepAlive);
       clients.delete(res);
+    });
+  }
+
+  async function handleGitHubWebhook(req, res) {
+    const eventName = req.headers['x-github-event'];
+    const delivery = req.headers['x-github-delivery'];
+    const signature = req.headers['x-hub-signature-256'];
+
+    if (typeof delivery !== 'string' || !delivery || delivery.length > 200) {
+      return sendJson(res, 400, { error: 'missing or invalid X-GitHub-Delivery' });
+    }
+    if (typeof eventName !== 'string' || !eventName || eventName.length > 80) {
+      return sendJson(res, 400, { error: 'missing or invalid X-GitHub-Event' });
+    }
+
+    const rawBody = await readRawBody(req);
+    let payload;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      return sendJson(res, 400, { error: 'invalid JSON body' });
+    }
+
+    const repository = payload?.repository?.full_name || '';
+    const source = findGitHubSource(store.state.sources, repository);
+    if (!source) {
+      return sendJson(res, 503, { error: 'no GitHub source configured' });
+    }
+
+    const secret = source.config?.webhookSecret || source.config?.secret;
+    if (!secret) {
+      return sendJson(res, 503, { error: 'GitHub webhook secret is not configured' });
+    }
+    if (!verifyGitHubSignature(secret, rawBody, signature)) {
+      return sendJson(res, 401, { error: 'invalid GitHub webhook signature' });
+    }
+
+    const { eventInput, ignoredReason } = normalizeGitHubEvent(eventName, payload);
+    let result;
+    try {
+      result = engine.ingestEvent({
+        ...eventInput,
+        sourceId: source.id,
+        dedupeKey: `${source.id}:github:${delivery}`,
+        ignoredReason,
+      });
+    } catch (error) {
+      if (String(error?.message || '').startsWith('source is paused:')) {
+        return sendJson(res, 409, { error: error.message });
+      }
+      throw error;
+    }
+
+    broadcast();
+    return sendJson(res, 202, {
+      ok: true,
+      duplicate: result.duplicate,
+      event: {
+        id: result.event.id,
+        kind: result.event.kind,
+        status: result.event.status,
+        ignoredReason: result.event.ignoredReason,
+      },
     });
   }
 
@@ -158,11 +280,13 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     }
 
     if (path === '/api/state' && method === 'GET') {
-      return sendJson(res, 200, store.snapshot());
+      return sendJson(res, 200, publicSnapshot());
     }
 
     if (path === '/api/overview' && method === 'GET') {
-      return sendJson(res, 200, engine.overview());
+      const overview = engine.overview();
+      overview.sources = overview.sources.map(redactSource);
+      return sendJson(res, 200, overview);
     }
 
     if (path === '/api/tick' && method === 'POST') {
@@ -195,21 +319,29 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
     }
 
     if (path === '/api/sources' && method === 'GET') {
-      return sendJson(res, 200, { sources: store.state.sources });
+      return sendJson(res, 200, { sources: publicSnapshot().sources });
     }
 
     if (path === '/api/sources' && method === 'POST') {
       const body = await readBody(req);
       const source = engine.addSource(body);
       broadcast();
-      return sendJson(res, 201, { source });
+      return sendJson(res, 201, { source: redactSource(source) });
+    }
+
+    const sourceDetail = path.match(/^\/api\/sources\/([^/]+)$/);
+    if (sourceDetail && method === 'PATCH') {
+      const body = await readBody(req);
+      const source = engine.updateSource(decodeURIComponent(sourceDetail[1]), body);
+      broadcast();
+      return sendJson(res, 200, { source: redactSource(source) });
     }
 
     const sourceToggle = path.match(/^\/api\/sources\/([^/]+)\/toggle$/);
     if (sourceToggle && method === 'POST') {
       const source = engine.toggleSource(decodeURIComponent(sourceToggle[1]));
       broadcast();
-      return sendJson(res, 200, { source });
+      return sendJson(res, 200, { source: redactSource(source) });
     }
 
     if (path === '/api/events' && method === 'GET') {
@@ -307,7 +439,9 @@ export function createApi({ store, engine, publicDir, version = '0.1.0' }) {
   async function handler(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     try {
-      if (url.pathname.startsWith('/api/')) {
+      if (url.pathname === '/hooks/github' && req.method === 'POST') {
+        await handleGitHubWebhook(req, res);
+      } else if (url.pathname.startsWith('/api/')) {
         await handleApi(req, res, url);
       } else {
         serveStatic(req, res, url.pathname);

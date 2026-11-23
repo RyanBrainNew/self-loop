@@ -347,7 +347,8 @@ CI 在 push 和 PR 上运行 `node --test`。测试覆盖策略/标签/选择、
 Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、inbox 幂等与结果事件、`maxConcurrent` 并发上限、`router status` 的 `--repo` 冒烟，以及只复制 skill 根目录后的独立运行。
 
 服务端控制台另外覆盖事件去重、Ticket/Attempt 生命周期、人工回答、Outbox
-重试、连接器与 Worker 开关，以及 HTTP API。当前测试基线：`66` 个测试全部
+重试、GitHub webhook 验签与幂等、secret 脱敏、连接器与 Worker 开关，以及
+HTTP API。当前测试基线：`70` 个测试全部
 通过（Node 20+）。
 
 ## 设计文档
