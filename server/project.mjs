@@ -395,15 +395,19 @@ function buildOverview(snapshot) {
 }
 
 export class ProjectRegistry {
-  constructor(repoArgs = [], { cwd = process.cwd(), outDir = null } = {}) {
+  constructor(repoArgs = [], { cwd = process.cwd(), outDir = null, env = process.env } = {}) {
     const values = Array.isArray(repoArgs) ? repoArgs : [repoArgs];
     const seen = new Set();
     this.entries = [];
+    this.env = env;
     for (const value of values.filter(Boolean)) {
       const repoRoot = resolveRepo({ repo: resolve(cwd, value) });
       if (seen.has(repoRoot)) continue;
       seen.add(repoRoot);
-      const settings = resolveSettings(repoRoot, outDir ? { outDir } : {});
+      const settings = resolveSettings(repoRoot, outDir ? { outDir } : {}, {
+        ...env,
+        GITHUB_REPOSITORY: '',
+      });
       const githubRepo = settings.githubRepo || '';
       this.entries.push({
         id: `prj_${hashId(repoRoot)}`,
@@ -697,7 +701,11 @@ export class ProjectBackend {
           timeout,
           windowsHide: true,
           maxBuffer: 4 * 1024 * 1024,
-          env: { ...process.env, SELF_LOOP_REPO: entry.repoRoot },
+          env: {
+            ...this.registry.env,
+            SELF_LOOP_REPO: entry.repoRoot,
+            GITHUB_REPOSITORY: entry.githubRepo || '',
+          },
         },
       );
       return { status: 0, stdout: result.stdout.trim(), stderr: result.stderr.trim() };

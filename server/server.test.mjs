@@ -659,7 +659,9 @@ async function projectFixture(count = 1) {
   for (let index = 0; index < count; index += 1) {
     dirs.push(projectDirectory(70 + index, `Real ticket ${index + 1}`, 'blocked'));
   }
-  const registry = new ProjectRegistry(dirs);
+  const registry = new ProjectRegistry(dirs, {
+    env: { ...process.env, GITHUB_REPOSITORY: 'noise/console-repo' },
+  });
   const backend = new ProjectBackend(registry);
   const auth = createAuth({ tokenFile: join(dirs[0], 'console-token') });
   const audit = new ConsoleAudit(join(dirs[0], 'console-audit.json'));
