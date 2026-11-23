@@ -9,6 +9,7 @@ import { createAuth, defaultTokenFile, isLoopbackHost } from './auth.mjs';
 import { ConsoleAudit } from './console-audit.mjs';
 import { DemoBackend } from './demo-backend.mjs';
 import { ProjectBackend, ProjectRegistry } from './project.mjs';
+import { ProjectStore, defaultProjectsFile } from './project-store.mjs';
 import { RouterEngine } from './router.mjs';
 import { createDemoState } from './seed.mjs';
 import { Store } from './store.mjs';
@@ -26,6 +27,7 @@ function parseArgs(argv) {
     out: null,
     authFile: defaultTokenFile(),
     auditFile: join(homedir(), '.self-loop', 'console-audit.json'),
+    projectsFile: defaultProjectsFile(),
     reset: false,
     demo: true,
     tick: true,
@@ -41,6 +43,7 @@ function parseArgs(argv) {
     else if (arg === '--out') options.out = argv[++index];
     else if (arg === '--auth-file') options.authFile = resolve(process.cwd(), argv[++index]);
     else if (arg === '--audit-file') options.auditFile = resolve(process.cwd(), argv[++index]);
+    else if (arg === '--projects-file') options.projectsFile = resolve(process.cwd(), argv[++index]);
     else if (arg === '--reset') options.reset = true;
     else if (arg === '--no-demo') options.demo = false;
     else if (arg === '--no-tick') options.tick = false;
@@ -64,13 +67,14 @@ function usage() {
     'Usage: node server/index.mjs [options]',
     '',
     'Modes:',
-    '  (default)        demo Router with a local synthetic state file',
+    '  (default)        registered projects, or demo when the registry is empty',
     '  --repo <path>    read/drive a real project .loop/state.json (repeatable)',
     '',
     'Options:',
     '  --port <n>           listen port (default 4317)',
     '  --host <addr>        listen address (default 127.0.0.1)',
-    '  --repo <path>        project repo; repeat to allow UI switching',
+    '  --repo <path>        register and open a project repo (repeatable)',
+    '  --projects-file <p>  persistent project registry',
     '  --out <dir>          project .loop output directory override',
     '  --data <path>        demo state file (default .self-loop/state.json)',
     '  --auth-file <path>   local write-token file',
@@ -110,15 +114,26 @@ if (options.rotateToken) {
 let backend;
 let timer;
 let dataFile = null;
+let projectStore = null;
 
+projectStore = new ProjectStore(options.projectsFile, { cwd: process.cwd() });
 if (options.repos.length) {
+  let opened = null;
+  for (const repo of options.repos) opened = projectStore.add(repo).project;
+  if (opened) projectStore.select(opened.id);
+}
+const registeredProjects = projectStore.list();
+
+if (registeredProjects.length) {
   if (options.reset) throw new Error('--reset only applies to demo mode');
-  if (options.out && options.repos.length !== 1) {
-    throw new Error('--out can only be used with a single --repo');
+  if (options.out && registeredProjects.length !== 1) {
+    throw new Error('--out can only be used with a single registered project');
   }
-  const registry = new ProjectRegistry(options.repos, {
+  const registry = new ProjectRegistry(registeredProjects, {
     cwd: process.cwd(),
     outDir: options.out,
+    store: projectStore,
+    currentId: projectStore.current()?.id,
   });
   backend = new ProjectBackend(registry);
 
@@ -134,6 +149,7 @@ if (options.repos.length) {
     }
   }, 250);
 } else {
+  if (options.repos.length) throw new Error('no project was registered');
   dataFile = resolve(process.cwd(), options.data);
   if (options.reset && existsSync(dataFile)) unlinkSync(dataFile);
   const store = new Store(dataFile, { initialState: createDemoState() });
@@ -185,7 +201,8 @@ server.listen(options.port, options.host, () => {
     for (const project of backend.registry.entries) {
       console.log(`  project ${project.name} · ${project.statePath}`);
     }
-    console.log('  mode    project · read .loop state · writes go through router CLI');
+    console.log(`  projects ${options.projectsFile}`);
+    console.log('  mode    project · multi-repo registry · writes go through router CLI');
   } else {
     console.log(`  data    ${dataFile}`);
     console.log(`  mode    demo · ${backend.store.state.config.autoTick ? 'auto tick' : 'paused'}`);

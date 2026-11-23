@@ -408,11 +408,40 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
       return sendJson(res, 200, backend.projects());
     }
 
+    if (path === '/api/projects' && method === 'POST') {
+      requireCapability('projectAdd', '添加项目');
+      const body = await readBody(req);
+      const result = backend.addProject(body);
+      record(req, authorization, 'project.added', result.project?.id || '');
+      broadcast();
+      return sendJson(res, result.added ? 201 : 200, result);
+    }
+
     if (path === '/api/projects/select' && method === 'POST') {
       requireCapability('projectSelect', '选择项目');
       const body = await readBody(req);
       const result = backend.selectProject(body.id);
       record(req, authorization, 'project.selected', `project=${body.id}`);
+      broadcast();
+      return sendJson(res, 200, result);
+    }
+
+    const projectSelect = path.match(/^\/api\/projects\/([^/]+)\/select$/);
+    if (projectSelect && method === 'POST') {
+      requireCapability('projectSelect', '选择项目');
+      const id = decodeURIComponent(projectSelect[1]);
+      const result = backend.selectProject(id);
+      record(req, authorization, 'project.selected', `project=${id}`);
+      broadcast();
+      return sendJson(res, 200, result);
+    }
+
+    const projectDetail = path.match(/^\/api\/projects\/([^/]+)$/);
+    if (projectDetail && method === 'DELETE') {
+      requireCapability('projectRemove', '移除项目');
+      const id = decodeURIComponent(projectDetail[1]);
+      const result = backend.removeProject(id);
+      record(req, authorization, 'project.removed', `project=${id}`);
       broadcast();
       return sendJson(res, 200, result);
     }
@@ -552,11 +581,11 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
       }
       if (action === 'cancel') {
         requireCapability('ticketCancel', '取消 Ticket');
-        result = backend.cancelTicket(id, authorization.actor);
+        result = await backend.cancelTicket(id, authorization.actor);
       }
       if (action === 'approve') {
         requireCapability('ticketApprove', '验收 Ticket');
-        result = backend.approveTicket(id, authorization.actor);
+        result = await backend.approveTicket(id, authorization.actor);
       }
       record(req, authorization, `ticket.${action}`, `ticket=${id}`);
       broadcast();
@@ -583,10 +612,18 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
       return sendJson(res, 200, { deliveries, capabilities: backend.capabilities });
     }
 
+    if (path === '/api/outbox/flush' && method === 'POST') {
+      requireCapability('outboxFlush', '投递消息');
+      const result = await backend.flushOutbox();
+      record(req, authorization, 'outbox.flushed', `mode=${backend.mode}`);
+      broadcast();
+      return sendJson(res, 200, result);
+    }
+
     const deliveryReplay = path.match(/^\/api\/outbox\/([^/]+)\/replay$/);
     if (deliveryReplay && method === 'POST') {
       requireCapability('outbox', '重投消息');
-      const delivery = backend.replayDelivery(
+      const delivery = await backend.replayDelivery(
         decodeURIComponent(deliveryReplay[1]),
         authorization.actor,
       );

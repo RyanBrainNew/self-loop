@@ -5,6 +5,8 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { resolveRepo, resolveSettings } from '../scripts/lib.mjs';
+import { resolveExecutorAdapter } from '../scripts/executors.mjs';
+import { loadOutbox, outboxSummary } from '../scripts/outbox.mjs';
 
 const execFileAsync = promisify(execFile);
 const skillRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -13,7 +15,8 @@ const routerScript = join(skillRoot, 'scripts', 'router.mjs');
 export const PROJECT_CAPABILITIES = Object.freeze({
   mode: 'project',
   liveState: true,
-  outbox: false,
+  outbox: true,
+  outboxFlush: true,
   simulate: false,
   pause: false,
   injectEvent: false,
@@ -22,10 +25,13 @@ export const PROJECT_CAPABILITIES = Object.freeze({
   configWrite: false,
   ticketAnswer: false,
   ticketRetry: true,
-  ticketCancel: false,
+  ticketCancel: true,
   ticketApprove: false,
   tick: true,
   projectSelect: true,
+  projectWrite: true,
+  projectAdd: true,
+  projectRemove: true,
   authRotate: true,
 });
 
@@ -87,9 +93,9 @@ function extractAcceptance(body = '') {
   return [...new Set(values.filter(Boolean))];
 }
 
-function stateSignature(statePath, inboxPath) {
+function stateSignature(statePath, inboxPath, outboxPath) {
   const parts = [];
-  for (const file of [statePath, inboxPath]) {
+  for (const file of [statePath, inboxPath, outboxPath]) {
     try {
       const stat = statSync(file);
       parts.push(`${file}:${stat.mtimeMs}:${stat.size}`);
@@ -108,6 +114,10 @@ function emptyCoreState(entry) {
     tickets: {},
     updatedAt: null,
   };
+}
+
+function emptyOutboxState() {
+  return { version: 1, updatedAt: null, deliveries: [] };
 }
 
 function mapEvent(event, source) {
@@ -143,6 +153,27 @@ function ticketId(number) {
   return `tkt_${number}`;
 }
 
+function mapDelivery(delivery) {
+  return {
+    id: String(delivery.id),
+    ticketId: delivery.ticket ? ticketId(delivery.ticket) : null,
+    ticketNumber: delivery.ticket || null,
+    channel: delivery.channel,
+    target: delivery.target,
+    kind: delivery.kind || 'ticket.status',
+    state: delivery.state,
+    attempts: Number(delivery.attempts || 0),
+    maxAttempts: Number(delivery.maxAttempts || 5),
+    lastError: delivery.lastError || null,
+    statusCode: delivery.statusCode ?? null,
+    requestId: delivery.requestId || null,
+    idempotencyKey: delivery.idempotencyKey || '',
+    createdAt: delivery.createdAt,
+    updatedAt: delivery.updatedAt,
+    sentAt: delivery.sentAt || null,
+  };
+}
+
 function mapTicket(ticket, entry, source) {
   const number = Number(ticket.number);
   const labels = ticket.labels || [];
@@ -150,7 +181,7 @@ function mapTicket(ticket, entry, source) {
   const verification = ticket.verification || null;
   const prNumber = Number(ticket.pr) || null;
   const workerName = ticket.worker?.pid
-    ? `Worker · pid ${ticket.worker.pid}`
+    ? `${ticket.worker.adapter || 'worker'} · pid ${ticket.worker.pid}`
     : ['working', 'verifying', 'claimed'].includes(ticket.state)
       ? 'Router worker'
       : null;
@@ -226,6 +257,8 @@ function mapAttempt(ticket, mapped) {
     exitCode: check.exitCode,
     durationMs: check.durationMs,
     outputPath: check.stdoutPath || verification.evidencePath,
+    stderrPath: check.stderrPath || null,
+    evidencePath: verification.evidencePath,
     summary: check.status,
   }));
   const lastResultState = ticket.lastResult?.state;
@@ -276,7 +309,7 @@ function mapWorkers(tickets, entry, mappedTickets) {
       {
         id: 'worker_project',
         name: entry.executorCommand ? basename(entry.executorCommand) : 'project executor',
-        kind: entry.executorCommand ? 'codex' : 'shell',
+        kind: entry.executorAdapter || (entry.executorCommand ? 'command' : 'shell'),
         status: 'online',
         paused: false,
         currentTicketId: null,
@@ -292,11 +325,11 @@ function mapWorkers(tickets, entry, mappedTickets) {
     return {
       id: mapped?.workerId || `worker_${ticket.number}`,
       name: mapped?.workerName || 'Router worker',
-      kind: ticket.worker?.pid ? 'codex' : 'shell',
+      kind: ticket.worker?.adapter || entry.executorAdapter || (ticket.worker?.pid ? 'command' : 'shell'),
       status: 'busy',
       paused: false,
       currentTicketId: mapped?.id || ticketId(ticket.number),
-      lastHeartbeat: ticket.updatedAt,
+      lastHeartbeat: ticket.worker?.heartbeatAt || ticket.updatedAt,
       capabilities: ['issue-to-pr'],
       concurrency: 1,
       note: '项目模式只读；Worker 由 Router 调度',
@@ -331,6 +364,7 @@ function derivedAudit(tickets, project) {
 
 function buildOverview(snapshot) {
   const tickets = snapshot.tickets;
+  const deliveries = snapshot.deliveries || [];
   const done = tickets.filter((ticket) => ticket.state === 'done');
   const finished = tickets.filter((ticket) => ['done', 'dropped', 'failed'].includes(ticket.state));
   const active = tickets.filter((ticket) =>
@@ -355,9 +389,13 @@ function buildOverview(snapshot) {
       awaitingReview: tickets.filter((ticket) => ticket.state === 'awaiting_review').length,
       blocked: tickets.filter((ticket) => ['blocked', 'failed'].includes(ticket.state)).length,
       done: done.length,
-      deliveries: 0,
-      deliveriesPending: 0,
-      deliveriesFailed: 0,
+      deliveries: deliveries.length,
+      deliveriesPending: deliveries.filter((delivery) =>
+        ['pending', 'sending', 'failed'].includes(delivery.state)
+      ).length,
+      deliveriesFailed: deliveries.filter((delivery) =>
+        ['failed', 'dead'].includes(delivery.state)
+      ).length,
       workersOnline: snapshot.workers.filter((worker) =>
         ['online', 'busy'].includes(worker.status),
       ).length,
@@ -377,7 +415,7 @@ function buildOverview(snapshot) {
     })),
     activeTickets: active.slice(0, 6),
     recentAudit: snapshot.audit.slice(0, 10),
-    recentDeliveries: [],
+    recentDeliveries: deliveries.slice(0, 8),
     sources: snapshot.sources,
     workers: snapshot.workers,
     avgCycleMinutes: done.length
@@ -395,38 +433,64 @@ function buildOverview(snapshot) {
 }
 
 export class ProjectRegistry {
-  constructor(repoArgs = [], { cwd = process.cwd(), outDir = null, env = process.env } = {}) {
-    const values = Array.isArray(repoArgs) ? repoArgs : [repoArgs];
+  constructor(projects = [], {
+    cwd = process.cwd(),
+    outDir = null,
+    env = process.env,
+    store = null,
+    currentId = null,
+  } = {}) {
+    const values = Array.isArray(projects) ? projects : [projects];
     const seen = new Set();
     this.entries = [];
     this.env = env;
+    this.store = store;
+    this.cwd = cwd;
+    this.outDir = outDir;
     for (const value of values.filter(Boolean)) {
-      const repoRoot = resolveRepo({ repo: resolve(cwd, value) });
+      const descriptor = typeof value === 'string' ? { path: value } : value;
+      if (!descriptor?.path) continue;
+      const repoRoot = resolveRepo({ repo: resolve(cwd, descriptor.path) });
       if (seen.has(repoRoot)) continue;
       seen.add(repoRoot);
-      const settings = resolveSettings(repoRoot, outDir ? { outDir } : {}, {
-        ...env,
-        GITHUB_REPOSITORY: '',
-      });
-      const githubRepo = settings.githubRepo || '';
-      this.entries.push({
-        id: `prj_${hashId(repoRoot)}`,
-        name: projectName(repoRoot, githubRepo),
-        repoRoot,
-        githubRepo,
-        settings,
-        statePath: join(settings.outDir, 'state.json'),
-        inboxPath: join(settings.outDir, 'inbox.json'),
-        maxConcurrent: settings.router.maxConcurrent,
-        maxAttempts: settings.router.maxAttempts,
-        leaseMinutes: settings.router.leaseMinutes,
-        language: settings.language,
-        executorCommand: settings.executor.command || '',
-        updatedAt: null,
-      });
+      this.entries.push(this.buildEntry(descriptor, repoRoot));
     }
-    if (!this.entries.length) throw new Error('project mode requires at least one --repo');
-    this.currentId = this.entries[0].id;
+    if (!this.entries.length) throw new Error('project mode requires at least one registered project');
+    this.currentId = currentId && this.entries.some((entry) => entry.id === currentId)
+      ? currentId
+      : store?.current()?.id && this.entries.some((entry) => entry.id === store.current().id)
+        ? store.current().id
+        : this.entries[0].id;
+  }
+
+  buildEntry(descriptor, repoRoot) {
+    const settings = resolveSettings(repoRoot, this.outDir ? { outDir: this.outDir } : {}, {
+      ...this.env,
+      GITHUB_REPOSITORY: '',
+    });
+    const githubRepo = settings.githubRepo || '';
+    return {
+      id: descriptor.id || `prj_${hashId(repoRoot)}`,
+      name: descriptor.name || projectName(repoRoot, githubRepo),
+      repoRoot,
+      path: repoRoot,
+      githubRepo,
+      settings,
+      statePath: join(settings.outDir, 'state.json'),
+      inboxPath: join(settings.outDir, 'inbox.json'),
+      outboxPath: join(settings.outDir, 'outbox.json'),
+      outDir: settings.outDir,
+      maxConcurrent: settings.router.maxConcurrent,
+      maxAttempts: settings.router.maxAttempts,
+      leaseMinutes: settings.router.leaseMinutes,
+      language: settings.language,
+      executorCommand: settings.executor.command || '',
+      executorAdapter: resolveExecutorAdapter(settings),
+      executorCapabilities: settings.executor.capabilities,
+      addedAt: descriptor.addedAt || null,
+      lastSelectedAt: descriptor.lastSelectedAt || null,
+      updatedAt: null,
+    };
   }
 
   current() {
@@ -436,18 +500,78 @@ export class ProjectRegistry {
   select(id) {
     const entry = this.entries.find((candidate) => candidate.id === id);
     if (!entry) throw new Error(`unknown project: ${id}`);
+    this.store?.select(entry.id);
     this.currentId = entry.id;
     return entry;
   }
 
+  addProject(value, { name = '' } = {}) {
+    if (!this.store) throw new Error('project registry has no persistent store');
+    const { project, added } = this.store.add(value, { name });
+    let entry = this.entries.find((candidate) => candidate.id === project.id);
+    if (!entry) {
+      entry = this.buildEntry(project, project.path);
+      this.entries.push(entry);
+    } else {
+      entry.name = project.name;
+    }
+    return { entry, added };
+  }
+
+  removeProject(id) {
+    if (!this.store) throw new Error('project registry has no persistent store');
+    if (this.entries.length <= 1) {
+      const error = new Error('cannot remove the last registered project');
+      error.statusCode = 409;
+      throw error;
+    }
+    const removed = this.store.remove(id);
+    this.entries = this.entries.filter((entry) => entry.id !== id);
+    const current = this.store.current();
+    this.currentId = current?.id && this.entries.some((entry) => entry.id === current.id)
+      ? current.id
+      : this.entries[0].id;
+    return removed;
+  }
+
   list() {
-    return this.entries.map((entry) => ({
-      id: entry.id,
-      name: entry.name,
-      repo: entry.githubRepo,
-      state: existsSync(entry.statePath) ? 'ready' : 'empty',
-      current: entry.id === this.currentId,
-    }));
+    return this.entries.map((entry) => {
+      let state = null;
+      let error = null;
+      try {
+        state = readJson(entry.statePath, null);
+      } catch (readError) {
+        error = readError.message;
+      }
+      const tickets = state?.tickets && typeof state.tickets === 'object'
+        ? Object.values(state.tickets)
+        : [];
+      return {
+        id: entry.id,
+        name: entry.name,
+        path: entry.path,
+        repo: entry.githubRepo,
+        state: error ? 'error' : existsSync(entry.statePath) ? 'ready' : 'empty',
+        health: error ? 'error' : existsSync(entry.statePath) ? 'live' : 'empty',
+        error,
+        current: entry.id === this.currentId,
+        tickets: tickets.length,
+        activeTickets: tickets.filter((ticket) =>
+          ['queued', 'claimed', 'working', 'verifying', 'awaiting_review', 'blocked', 'failed']
+            .includes(ticket.state)
+        ).length,
+        blocked: tickets.filter((ticket) => ['blocked', 'failed'].includes(ticket.state)).length,
+        updatedAt: state?.updatedAt || null,
+        addedAt: entry.addedAt,
+        lastSelectedAt: entry.lastSelectedAt,
+        executor: {
+          adapter: entry.executorAdapter || 'command',
+          command: entry.executorCommand,
+          capabilities: entry.executorCapabilities,
+        },
+        maxConcurrent: entry.maxConcurrent,
+      };
+    });
   }
 }
 
@@ -466,7 +590,8 @@ export class ProjectBackend {
   get capabilities() {
     return {
       ...PROJECT_CAPABILITIES,
-      projectSelect: this.registry.entries.length > 1,
+      projectSelect: this.registry.entries.length > 0,
+      projectRemove: this.registry.entries.length > 1,
     };
   }
 
@@ -479,12 +604,35 @@ export class ProjectBackend {
     return { project: this.projectPublic(entry), projects: this.projects() };
   }
 
+  addProject(input = {}) {
+    const { entry, added } = this.registry.addProject(input.path, { name: input.name });
+    this.registry.select(entry.id);
+    this.signatures.delete(entry.id);
+    return {
+      project: this.projectPublic(entry),
+      projects: this.projects(),
+      added,
+    };
+  }
+
+  removeProject(id) {
+    const current = this.registry.current();
+    const removed = this.registry.removeProject(id);
+    if (current.id !== this.registry.currentId) this.signatures.delete(current.id);
+    return {
+      removed: { id: removed.id, name: removed.name, path: removed.path },
+      projects: this.projects(),
+    };
+  }
+
   projectPublic(entry) {
     return {
       id: entry.id,
       name: entry.name,
       repo: entry.githubRepo,
+      path: entry.path,
       state: existsSync(entry.statePath) ? 'ready' : 'empty',
+      current: entry.id === this.registry.currentId,
     };
   }
 
@@ -508,12 +656,19 @@ export class ProjectBackend {
       state.tickets = {};
     }
     if (!Array.isArray(inbox.events)) inbox.events = [];
+    let outbox;
+    try {
+      outbox = loadOutbox({ outDir: entry.outDir });
+    } catch (readError) {
+      outbox = emptyOutboxState();
+      error = error || readError.message;
+    }
     entry.updatedAt = state.updatedAt || null;
-    return { entry, state, inbox, error };
+    return { entry, state, inbox, outbox, error };
   }
 
   signature(entry = this.registry.current()) {
-    return stateSignature(entry.statePath, entry.inboxPath);
+    return stateSignature(entry.statePath, entry.inboxPath, entry.outboxPath);
   }
 
   changed() {
@@ -525,7 +680,7 @@ export class ProjectBackend {
   }
 
   snapshot() {
-    const { entry, state, inbox, error } = this.read();
+    const { entry, state, inbox, outbox, error } = this.read();
     const source = {
       id: 'src_github',
       name: 'GitHub Issues',
@@ -556,6 +711,9 @@ export class ProjectBackend {
       })
       .filter(Boolean)
       .sort((a, b) => parseTime(b.startedAt) - parseTime(a.startedAt));
+    const deliveries = outbox.deliveries
+      .map(mapDelivery)
+      .sort((a, b) => parseTime(b.createdAt) - parseTime(a.createdAt));
     const workers = mapWorkers(Object.values(state.tickets), entry, tickets);
     const audit = derivedAudit(tickets, entry.name);
     const updatedAt = state.updatedAt || this.startedAt;
@@ -599,7 +757,7 @@ export class ProjectBackend {
       events,
       tickets,
       attempts,
-      deliveries: [],
+      deliveries,
       workers,
       audit,
       capabilities: this.capabilities,
@@ -610,6 +768,7 @@ export class ProjectBackend {
         tickCount: meta.tickCount,
         uptimeSeconds: Math.max(0, Math.round((this.now() - parseTime(this.startedAt)) / 1000)),
         stateFile: existsSync(entry.statePath) ? '.loop/state.json' : null,
+        outbox: outboxSummary(outbox),
         error,
       },
     };
@@ -662,7 +821,9 @@ export class ProjectBackend {
       source,
       event,
       attempts,
-      deliveries: [],
+      deliveries: snapshot.deliveries.filter(
+        (delivery) => Number(delivery.ticketNumber) === Number(ticket.number),
+      ),
       audit,
       timeline,
       routeReason: [
@@ -730,6 +891,29 @@ export class ProjectBackend {
     };
   }
 
+  async flushOutbox() {
+    const result = await this.runRouter(['outbox', 'flush', '--limit', '20']);
+    return {
+      ok: true,
+      detail: 'Outbox flush 完成',
+      output: result.stdout.slice(-4000),
+    };
+  }
+
+  async replayDelivery(id) {
+    const result = await this.runRouter(['outbox', 'retry', '--id', String(id)]);
+    let delivery = null;
+    try {
+      delivery = JSON.parse(result.stdout);
+    } catch {}
+    return {
+      ok: true,
+      detail: '投递已重新排队',
+      output: result.stdout.slice(-4000),
+      ...(delivery || {}),
+    };
+  }
+
   ticketNumber(id) {
     const snapshot = this.snapshot();
     const ticket = snapshot.tickets.find(
@@ -742,6 +926,13 @@ export class ProjectBackend {
     const number = this.ticketNumber(id);
     if (!Number.isInteger(number) || number <= 0) throw new Error(`unknown ticket: ${id}`);
     const result = await this.runRouter(['recover', '--ticket', String(number), '--no-notify']);
+    return { ok: true, detail: result.stdout, ticketNumber: number };
+  }
+
+  async cancelTicket(id) {
+    const number = this.ticketNumber(id);
+    if (!Number.isInteger(number) || number <= 0) throw new Error(`unknown ticket: ${id}`);
+    const result = await this.runRouter(['cancel', '--ticket', String(number), '--no-notify']);
     return { ok: true, detail: result.stdout, ticketNumber: number };
   }
 

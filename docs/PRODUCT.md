@@ -80,6 +80,7 @@ Outbox 负责把执行结果送回外部系统，例如：
 
 | 页面 | 回答的问题 |
 | --- | --- |
+| Projects | 一个控制面管理哪些仓库，当前切到哪一个 |
 | Overview | 整个 Router 是否健康，积压和失败在哪里 |
 | Inbox | 事件从哪里来，是否已被消费 |
 | Tickets | 任务当前处于哪个生命周期阶段 |
@@ -95,13 +96,14 @@ Outbox 负责把执行结果送回外部系统，例如：
 
 - Node 20+，无前端构建步骤；
 - demo 模式状态落在 `.self-loop/state.json`；
-- 项目模式直接读取目标仓库 `.loop/state.json` 与 `.loop/inbox.json`，不复制
-  Ticket 状态；
+- 项目注册表默认在 `~/.self-loop/projects.json`，一个地址统一管理多个仓库；
+- 项目模式直接读取目标仓库 `.loop/state.json`、`.loop/inbox.json` 与
+  `.loop/outbox.json`，不复制 Ticket 状态；
 - 默认只绑定 `127.0.0.1`；
 - 首次启动生成仅当前用户可读的本地 write token；浏览器使用同源 HttpOnly
   会话，CLI 使用 Bearer token；
 - 所有写接口和跨站读写都校验 Origin；
-- 适合本机演示、单项目控制和验证产品形态。
+- 适合本机演示、多仓库控制和验证产品形态。
 
 ### local console 与 hosted console 的差异
 
@@ -110,10 +112,10 @@ Outbox 负责把执行结果送回外部系统，例如：
 | 身份 | 本地 token + 同源会话 | 用户、团队、SSO |
 | 权限 | 本机即管理员 | RBAC、项目级权限 |
 | 状态 | 目标仓库 `.loop` 或 demo JSON | 数据库、迁移、多进程锁 |
-| 项目 | 启动参数 allowlist，可在 UI 切换 | 组织 / 项目注册与隔离 |
+| 项目 | 本地持久化注册表，可在 UI 添加/移除/切换 | 组织 / 项目注册与隔离 |
 | 网络 | 默认 loopback，禁止直接公网暴露 | TLS、反向代理、限流 |
 | 审计 | 本地控制台审计 + Router 状态 | 集中审计、保留策略、告警 |
-| Outbox | demo 有队列；项目模式暂未持久化 | 多通道投递、死信与重放 |
+| Outbox | 持久化 `.loop/outbox.json`，GitHub/Jira/Slack 投递与死信 | 托管密钥、多租户限流与集中重放 |
 
 hosted 版本不是把当前 server 直接放到公网，而是新的数据模型和权限模型，需要
 独立 ADR。
@@ -134,7 +136,11 @@ MVP 中以下能力是真实的：
 
 - demo Router 的事件去重、消费和 Inbox 状态；
 - 项目模式读取真实 `.loop` Ticket、Attempt、证据和 Inbox；
-- 项目模式的 tick / recover 通过同一个 Router 锁边界执行；
+- 项目模式的 tick / recover / cancel / Outbox 通过同一个 Router 锁边界执行；
+- 多仓库注册表、项目切换、添加和移除；
+- Codex / Claude / 自定义 executor adapter，超时、崩溃检测和取消；
+- 真实 Verifier clean worktree、门禁证据和缺失门禁转人工；
+- 持久化 Outbox，GitHub/Jira/Slack 投递、幂等键、429 退避和死信；
 - demo 模式的 Ticket 生命周期、人工回答、Outbox 重试和死信；
 - Source / Worker 开关和审计记录（demo）；
 - 本地 write token、同源会话、Origin 校验、轮换和写审计；
@@ -145,9 +151,8 @@ MVP 中以下能力是真实的：
 
 - demo 模式的 Worker 执行是定时器，不是 agent；
 - demo 模式的 Verifier 证据是合成的；
-- Jira / Slack 的 OAuth、事件接入和外部写回；
-- 项目模式 Outbox 历史尚未由核心 Router 持久化；
-- GitHub API 轮询、OAuth 和出站评论写回（项目模式由 Router 自己负责评论）。
+- Jira / Slack 的入站 OAuth 与事件接入；
+- hosted 身份、RBAC、数据库和多租户隔离。
 
 ## 产品边界
 
@@ -164,4 +169,7 @@ MVP 中以下能力是真实的：
 - [Local web console ADR](adr/0007-local-web-console.md)
 - [Console reads project Router ADR](adr/0008-console-reads-project-router.md)
 - [Local write token ADR](adr/0009-local-write-token.md)
+- [Multi-project console ADR](adr/0010-multi-project-console.md)
+- [Executor adapters ADR](adr/0011-executor-adapters.md)
+- [Durable Outbox ADR](adr/0012-durable-outbox.md)
 - [Router protocol](../references/ROUTER.md)

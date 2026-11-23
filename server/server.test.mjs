@@ -11,6 +11,7 @@ import { createAuth } from './auth.mjs';
 import { ConsoleAudit } from './console-audit.mjs';
 import { DemoBackend } from './demo-backend.mjs';
 import { ProjectBackend, ProjectRegistry } from './project.mjs';
+import { ProjectStore } from './project-store.mjs';
 import { RouterEngine } from './router.mjs';
 import { createDemoState } from './seed.mjs';
 import { Store, nowIso } from './store.mjs';
@@ -651,6 +652,37 @@ function projectDirectory(number, title, state) {
       ],
     }, null, 2)}\n`,
   );
+  writeFileSync(
+    join(dir, '.loop', 'outbox.json'),
+    `${JSON.stringify({
+      version: 1,
+      updatedAt: at,
+      deliveries: [
+        {
+          id: `out_${number}`,
+          ticket: number,
+          ticketTitle: title,
+          attempt: 2,
+          ticketState: 'blocked',
+          channel: 'github',
+          target: `acme/real#${number}`,
+          kind: 'ticket.status',
+          body: 'status',
+          idempotencyKey: `self-loop:ticket:${number}:blocked`,
+          state: 'dead',
+          attempts: 5,
+          maxAttempts: 5,
+          nextAttemptAt: null,
+          lastError: 'HTTP 401',
+          statusCode: 401,
+          requestId: 'req-real',
+          createdAt: at,
+          updatedAt: at,
+          sentAt: null,
+        },
+      ],
+    }, null, 2)}\n`,
+  );
   return dir;
 }
 
@@ -659,7 +691,12 @@ async function projectFixture(count = 1) {
   for (let index = 0; index < count; index += 1) {
     dirs.push(projectDirectory(70 + index, `Real ticket ${index + 1}`, 'blocked'));
   }
-  const registry = new ProjectRegistry(dirs, {
+  const storeFile = join(dirs[0], 'projects.json');
+  const store = new ProjectStore(storeFile);
+  for (const dir of dirs) store.add(dir);
+  const registry = new ProjectRegistry(store.list(), {
+    store,
+    currentId: store.current()?.id,
     env: { ...process.env, GITHUB_REPOSITORY: 'noise/console-repo' },
   });
   const backend = new ProjectBackend(registry);
@@ -671,13 +708,17 @@ async function projectFixture(count = 1) {
   const port = server.address().port;
   return {
     dirs,
+    store,
+    storeFile,
     registry,
     backend,
     token: auth.token,
     base: `http://127.0.0.1:${port}`,
     async close() {
       await new Promise((resolve) => server.close(resolve));
-      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+      for (const dir of dirs) {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
     },
   };
 }
@@ -688,7 +729,10 @@ test('project mode reads the real .loop state and delegates recover to the route
     const snapshot = await fetch(`${context.base}/api/state`).then((response) => response.json());
     assert.equal(snapshot.capabilities.mode, 'project');
     assert.equal(snapshot.capabilities.liveState, true);
-    assert.equal(snapshot.capabilities.outbox, false);
+    assert.equal(snapshot.capabilities.outbox, true);
+    assert.equal(snapshot.capabilities.projectAdd, true);
+    assert.equal(snapshot.deliveries.length, 1);
+    assert.equal(snapshot.deliveries[0].state, 'dead');
     assert.equal(snapshot.tickets.length, 1);
     assert.equal(snapshot.tickets[0].number, 70);
     assert.equal(snapshot.tickets[0].title, 'Real ticket 1');
@@ -711,11 +755,21 @@ test('project mode reads the real .loop state and delegates recover to the route
     assert.equal(state.tickets['70'].state, 'queued');
     assert.equal(state.tickets['70'].manualRecoveries, 1);
 
-    const unsupported = await fetch(`${context.base}/api/outbox/any/replay`, {
+    const replay = await fetch(`${context.base}/api/outbox/out_70/replay`, {
       method: 'POST',
       headers: writeHeaders({ token: context.token }),
     });
-    assert.equal(unsupported.status, 409);
+    assert.equal(replay.status, 200);
+    const outbox = JSON.parse(readFileSync(join(context.dirs[0], '.loop', 'outbox.json'), 'utf8'));
+    assert.equal(outbox.deliveries[0].state, 'pending');
+
+    const cancelled = await fetch(`${context.base}/api/tickets/tkt_70/cancel`, {
+      method: 'POST',
+      headers: writeHeaders({ token: context.token }),
+    });
+    assert.equal(cancelled.status, 200);
+    const afterCancel = JSON.parse(readFileSync(join(context.dirs[0], '.loop', 'state.json'), 'utf8'));
+    assert.equal(afterCancel.tickets['70'].state, 'dropped');
 
     const inject = await fetch(`${context.base}/api/events`, {
       method: 'POST',
@@ -730,6 +784,8 @@ test('project mode reads the real .loop state and delegates recover to the route
 
 test('project mode can switch between allowlisted repositories from the UI API', async () => {
   const context = await projectFixture(2);
+  const extra = projectDirectory(72, 'Real ticket 3', 'queued');
+  context.dirs.push(extra);
   try {
     const projects = await fetch(`${context.base}/api/projects`).then((response) => response.json());
     assert.equal(projects.items.length, 2);
@@ -746,7 +802,74 @@ test('project mode can switch between allowlisted repositories from the UI API',
     assert.equal(snapshot.config.project.id, projects.items[1].id);
     assert.equal(snapshot.tickets[0].number, 71);
     assert.equal(snapshot.projects.currentId, projects.items[1].id);
+
+    const unauthorized = await fetch(`${context.base}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: extra }),
+    });
+    assert.equal(unauthorized.status, 401);
+
+    const added = await fetch(`${context.base}/api/projects`, {
+      method: 'POST',
+      headers: writeHeaders({ token: context.token }),
+      body: JSON.stringify({ path: extra, name: 'Third repo' }),
+    });
+    assert.equal(added.status, 201);
+    const addedBody = await added.json();
+    assert.equal(addedBody.added, true);
+    assert.equal(addedBody.projects.items.length, 3);
+
+    const reopened = new ProjectStore(context.storeFile);
+    assert.equal(reopened.list().length, 3);
+    assert.equal(reopened.current().id, addedBody.project.id);
+    assert.equal(reopened.list().find((item) => item.id === addedBody.project.id).name, 'Third repo');
+
+    const current = await fetch(`${context.base}/api/projects/${addedBody.project.id}`, {
+      method: 'DELETE',
+      headers: writeHeaders({ token: context.token }),
+    });
+    assert.equal(current.status, 200);
+    const afterRemove = await current.json();
+    assert.equal(afterRemove.projects.items.length, 2);
+    assert.equal(afterRemove.projects.currentId, projects.items[1].id);
+
+    const removed = await fetch(`${context.base}/api/projects/${projects.items[1].id}`, {
+      method: 'DELETE',
+      headers: writeHeaders({ token: context.token }),
+    });
+    assert.equal(removed.status, 200);
+    const last = await fetch(`${context.base}/api/projects/${projects.items[0].id}`, {
+      method: 'DELETE',
+      headers: writeHeaders({ token: context.token }),
+    });
+    assert.equal(last.status, 409);
   } finally {
     await context.close();
+  }
+});
+
+test('project registry persists the selected project and protects the last entry', () => {
+  const dirs = [projectDirectory(80, 'Registry A', 'queued'), projectDirectory(81, 'Registry B', 'queued')];
+  try {
+    const file = join(dirs[0], 'projects.json');
+    const store = new ProjectStore(file);
+    const first = store.add(dirs[0]).project;
+    const second = store.add(dirs[1]).project;
+    assert.equal(store.current().id, first.id);
+
+    store.select(second.id);
+    const reopened = new ProjectStore(file);
+    assert.equal(reopened.list().length, 2);
+    assert.equal(reopened.current().id, second.id);
+
+    reopened.remove(first.id);
+    assert.equal(reopened.current().id, second.id);
+    assert.throws(
+      () => reopened.remove(second.id),
+      /cannot remove the last registered project/,
+    );
+  } finally {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

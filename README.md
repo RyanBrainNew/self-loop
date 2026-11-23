@@ -22,9 +22,10 @@
 3. **Inbox / Blackboard**：展示所有采集到的事件、Ticket 和实时处理状态；
 4. **Outbox**：把完成结果回写到 GitHub、IM 或其他外部系统。
 
-控制台围绕这些能力提供 `Overview`、`Inbox`、`Tickets`、`Outbox`、`Sources`、
-`Workers` 和 `Policy` 页面，并允许人工回答、重跑、取消、验收和重投。skill 仍然是
-Worker 侧的执行协议；Web 控制台是观察和干预 Router 的产品表面。
+控制台围绕这些能力提供 `Projects`、`Overview`、`Inbox`、`Tickets`、`Outbox`、
+`Sources`、`Workers` 和 `Policy` 页面，并允许人工回答、重跑、取消、验收和重投。
+一个控制面可以持久化管理多个仓库，并在不复制 Ticket 状态的前提下切换项目。
+skill 仍然是 Worker 侧的执行协议；Web 控制台是观察和干预 Router 的产品表面。
 
 产品结构、部署形态和真实/模拟能力边界见
 [`docs/PRODUCT.md`](docs/PRODUCT.md)。
@@ -40,26 +41,33 @@ Ticket → Attempt → Verifier → Outbox 的链路可视化，并允许人工�
 npm run serve
 # http://127.0.0.1:4317
 
-# 项目模式：读取目标仓库真实的 .loop/state.json
+# 项目模式：注册并读取目标仓库真实的 .loop/state.json
 npm run serve:project -- /path/to/project
 
-# 多个项目可在控制台左上角切换
+# 继续注册多个项目；之后重启不再需要重复传 --repo
 npm run serve:project -- /path/to/project-a /path/to/project-b
+
+# 注册表非空后，普通 npm run serve 也会直接打开统一控制面
+npm run serve
 ```
 
 演示模式的状态保存在 `.self-loop/state.json`，该目录已被 gitignore。项目模式
-不复制 Ticket 状态：控制台只读 `.loop/state.json` 与 `.loop/inbox.json`，写操作
-通过同一个 `scripts/router.mjs` 锁边界执行，Router 仍是 Ticket 状态的唯一写入者。
+不复制 Ticket 状态：控制台只读 `.loop/state.json`、`.loop/inbox.json` 与
+`.loop/outbox.json`，写操作通过同一个 `scripts/router.mjs` 锁边界执行，Router
+仍是 Ticket 状态的唯一写入者。项目注册表默认在
+`~/.self-loop/projects.json`，可在 `Projects` 页面添加、移除和切换仓库。
 
 控制台默认只绑定 `127.0.0.1`。首次启动会在
 `~/.self-loop/console-token` 生成本地 write token；浏览器通过同源 HttpOnly
 会话写操作，CLI 使用 `Authorization: Bearer <token>`。所有写接口校验 Origin，
 跨站读写和 SSE 都会被拒绝。不要在没有认证反向代理的情况下暴露到公网。
 
-连接器配置、事件注入、Ticket 生命周期和 Outbox 重试是真实的；GitHub
-webhook 原始报文验签和 delivery 去重已经接入。demo 模式的 Worker 执行与
-Verifier 证据仍是定时模拟；真实 executor、Jira/Slack OAuth 和外部 API 写回
-在后续 issue 中推进。详见 `server/README.md`。
+连接器配置、事件注入、Ticket 生命周期、真实 Verifier 证据和 Outbox 投递都是
+真实的；GitHub webhook 原始报文验签和 delivery 去重已经接入。项目模式可通过
+`executor.adapter` 接入 Codex、Claude 或自定义命令 adapter；Outbox 支持
+GitHub Issue/PR 评论、Jira 评论和 Slack channel/thread，带 429 退避、死信和
+人工重投。demo 模式仍使用模拟 Worker 与 Verifier，方便第一次打开控制台。
+详见 `server/README.md`、`references/CONFIG.md` 和 ADR 0010–0012。
 
 ## 官网
 
@@ -177,6 +185,9 @@ node "$SKILL_DIR/scripts/run.mjs" router status --repo "$TARGET_REPO" --json
 
 # 人看完证据后解除 blocked，再给一次 Attempt
 node "$SKILL_DIR/scripts/run.mjs" router recover --repo "$TARGET_REPO" --ticket 42
+
+# 投递 Outbox 中到期的 GitHub / Jira / Slack 消息
+node "$SKILL_DIR/scripts/run.mjs" router outbox --repo "$TARGET_REPO" flush
 
 # 生成复盘素材 .loop/retro.md
 node "$SKILL_DIR/scripts/run.mjs" retro --repo "$TARGET_REPO"
