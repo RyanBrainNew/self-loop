@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { loadSqliteInbox, saveSqliteInbox } from './sqlite-store.mjs';
 
 export const INBOX_VERSION = 1;
 
@@ -26,6 +27,7 @@ export const EVENT_TYPES = Object.freeze([
   'schedule',
   'control',
   'manual',
+  'task',
 ]);
 
 const EVENT_TYPE_SET = new Set(EVENT_TYPES);
@@ -39,6 +41,7 @@ export function emptyInbox() {
 }
 
 export function loadInbox(settings) {
+  if (settings.storage?.backend === 'sqlite') return loadSqliteInbox(settings);
   const file = inboxPath(settings);
   if (!existsSync(file)) return emptyInbox();
   let parsed;
@@ -56,6 +59,10 @@ export function loadInbox(settings) {
 }
 
 export function saveInbox(settings, inbox) {
+  if (settings.storage?.backend === 'sqlite') {
+    saveSqliteInbox(settings, inbox);
+    return;
+  }
   mkdirSync(settings.outDir, { recursive: true });
   const file = inboxPath(settings);
   const temporary = `${file}.${process.pid}.tmp`;

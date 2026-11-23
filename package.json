@@ -12,10 +12,12 @@
     "test": "node --test",
     "test:skill": "node --test scripts/self-loop.test.mjs",
     "test:server": "node --test server/server.test.mjs",
+    "test:e2e:codex": "node scripts/e2e-executor.mjs --adapter codex",
     "serve": "node server/index.mjs",
     "serve:project": "node server/index.mjs --repo",
     "rotate-token": "node server/index.mjs --rotate-token",
     "setup": "node scripts/setup-project.mjs",
-    "init-memory": "node scripts/init-memory.mjs"
+    "init-memory": "node scripts/init-memory.mjs",
+    "migrate:sqlite": "node scripts/migrate-store.mjs"
   }
 }

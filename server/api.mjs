@@ -2,6 +2,12 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
 import { normalizeGitHubEvent } from './connectors/github.mjs';
+import {
+  normalizeSlackCommand,
+  normalizeSlackEvent,
+  parseSlackBody,
+  verifySlackSignature,
+} from './connectors/slack.mjs';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -115,10 +121,22 @@ function findGitHubSource(sources, repository) {
   return githubSources.find((source) => source.status === 'healthy') || githubSources[0] || null;
 }
 
+function findSlackSource(sources) {
+  return sources.find((source) => ['slack', 'im'].includes(source.kind)
+    && source.status !== 'paused') || null;
+}
+
 function redactSource(source) {
   const copy = structuredClone(source);
   if (!copy.config || typeof copy.config !== 'object') return copy;
-  for (const key of ['secret', 'webhookSecret', 'token', 'apiToken', 'password']) {
+  for (const key of [
+    'secret',
+    'webhookSecret',
+    'signingSecret',
+    'token',
+    'apiToken',
+    'password',
+  ]) {
     if (copy.config[key]) copy.config[key] = '••••••';
   }
   return copy;
@@ -239,22 +257,45 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     }
 
     const repository = payload?.repository?.full_name || '';
-    const snapshot = backend.snapshot();
-    const source = backend.mode === 'project'
-      ? {
-          id: 'src_github',
-          name: 'GitHub Issues',
-          kind: 'github',
-          status: 'healthy',
-          config: {
-            repo: snapshot.config.project.repo,
-            webhookSecret:
-              process.env.SELF_LOOP_GITHUB_WEBHOOK_SECRET
-              || process.env.GITHUB_WEBHOOK_SECRET
-              || '',
-          },
-        }
-      : findGitHubSource(snapshot.sources, repository);
+    let projectEntry = null;
+    let source = null;
+    if (backend.mode === 'project') {
+      const env = backend.registry.env || process.env;
+      const entries = backend.registry.entries;
+      const matches = entries.filter(
+        (entry) => entry.githubRepo
+          && repository
+          && String(entry.githubRepo).toLowerCase() === repository.toLowerCase(),
+      );
+      if (matches.length > 1) {
+        return sendJson(res, 409, {
+          error: 'GitHub repository is registered more than once',
+          repository,
+        });
+      }
+      projectEntry = matches[0] || null;
+      if (!projectEntry && entries.length === 1) projectEntry = entries[0];
+      if (!projectEntry) {
+        return sendJson(res, 503, {
+          error: 'no registered project matches the GitHub repository',
+          repository,
+        });
+      }
+      const secretEnv = projectEntry.settings.connectors?.github?.webhookSecretEnv
+        || 'SELF_LOOP_GITHUB_WEBHOOK_SECRET';
+      source = {
+        id: 'src_github',
+        name: `GitHub · ${projectEntry.name}`,
+        kind: 'github',
+        status: 'healthy',
+        config: {
+          repo: projectEntry.githubRepo,
+          webhookSecret: env[secretEnv] || env.GITHUB_WEBHOOK_SECRET || '',
+        },
+      };
+    } else {
+      source = findGitHubSource(backend.snapshot().sources, repository);
+    }
     if (!source) {
       return sendJson(res, 503, { error: 'no GitHub source configured' });
     }
@@ -282,7 +323,7 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     try {
       if (backend.mode === 'project') {
         const ticket = Number(eventInput.externalId?.replace(/\D/g, '')) || null;
-        const posted = await backend.runRouter([
+        const posted = await backend.runRouterFor(projectEntry, [
           'post',
           '--type',
           eventName === 'pull_request' ? 'pull_request' : 'issue',
@@ -331,6 +372,144 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
         kind: result.event.kind,
         status: result.event.status,
         ignoredReason: result.event.ignoredReason,
+      },
+    });
+  }
+
+  async function handleSlackWebhook(req, res) {
+    if (req.headers.origin && !auth.sameOrigin(req)) {
+      return sendJson(res, 403, { error: 'cross-site request rejected' });
+    }
+    const rawBody = await readRawBody(req);
+    const contentType = req.headers['content-type'] || '';
+    const timestamp = req.headers['x-slack-request-timestamp'];
+    const signature = req.headers['x-slack-signature'];
+    let source = null;
+    let projectEntry = null;
+    if (backend.mode === 'project') {
+      const env = backend.registry.env || process.env;
+      const candidates = backend.registry.entries
+        .map((entry) => ({ entry, config: entry.settings.connectors?.slack }))
+        .filter((candidate) => candidate.config?.enabled);
+      if (!candidates.length) {
+        return sendJson(res, 503, { error: 'no Slack source configured' });
+      }
+      const withSecrets = candidates.map((candidate) => ({
+        ...candidate,
+        secret: env[candidate.config.signingSecretEnv || 'SLACK_SIGNING_SECRET'] || '',
+      }));
+      if (!withSecrets.some((candidate) => candidate.secret)) {
+        return sendJson(res, 503, { error: 'Slack signing secret is not configured' });
+      }
+      const verified = withSecrets.filter((candidate) => verifySlackSignature(
+        candidate.secret,
+        rawBody,
+        timestamp,
+        signature,
+      ));
+      if (!verified.length) {
+        return sendJson(res, 401, { error: 'invalid or expired Slack signature' });
+      }
+      let chosen = verified[0];
+      if (verified.length > 1) {
+        let channel = '';
+        try {
+          const probe = parseSlackBody(rawBody, contentType);
+          channel = String(probe.form?.channel_id || probe.json?.event?.channel || '');
+        } catch {}
+        const narrowed = channel
+          ? verified.filter((candidate) => {
+              const allowed = (candidate.config.allowedChannels || []).map(String);
+              return !allowed.length || allowed.includes(channel);
+            })
+          : verified;
+        if (narrowed.length === 1) chosen = narrowed[0];
+        else if (narrowed.length > 1) {
+          return sendJson(res, 409, {
+            error: 'Slack request matches multiple projects; configure distinct signing secrets',
+          });
+        } else {
+          return sendJson(res, 403, { error: 'Slack channel is not allowed' });
+        }
+      }
+      projectEntry = chosen.entry;
+      source = {
+        id: 'src_slack',
+        name: `Slack · ${chosen.entry.name}`,
+        kind: 'slack',
+        status: 'healthy',
+        config: chosen.config,
+      };
+    } else {
+      source = findSlackSource(backend.snapshot().sources || []);
+      if (!source) {
+        return sendJson(res, 503, { error: 'no Slack source configured' });
+      }
+      const signingSecret = source.config?.signingSecret
+        || (source.config?.signingSecretEnv
+          ? process.env[source.config.signingSecretEnv]
+          : '')
+        || process.env.SLACK_SIGNING_SECRET
+        || '';
+      if (!signingSecret) {
+        return sendJson(res, 503, { error: 'Slack signing secret is not configured' });
+      }
+      if (!verifySlackSignature(signingSecret, rawBody, timestamp, signature)) {
+        return sendJson(res, 401, { error: 'invalid or expired Slack signature' });
+      }
+    }
+
+    let parsed;
+    try {
+      parsed = parseSlackBody(rawBody, contentType);
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+    if (parsed.json?.type === 'url_verification') {
+      return sendText(res, 200, String(parsed.json.challenge || ''));
+    }
+
+    const normalized = parsed.form
+      ? normalizeSlackCommand(parsed.form, {
+          allowedChannels: source.config?.allowedChannels || [],
+        })
+      : normalizeSlackEvent(parsed.json, {
+          respondToMessages: Boolean(source.config?.respondToMessages),
+          allowedChannels: source.config?.allowedChannels || [],
+        });
+    const acknowledgement = normalized.acknowledgement
+      || (normalized.eventInput
+        ? `已收到 #${normalized.eventInput.title}`
+        : normalized.ignoredReason);
+
+    if (!normalized.eventInput) {
+      return sendJson(res, 200, {
+        ok: true,
+        ignoredReason: normalized.ignoredReason,
+        response_type: 'ephemeral',
+        text: acknowledgement,
+      });
+    }
+
+    const eventInput = {
+      ...normalized.eventInput,
+      source: {
+        id: source.id,
+        kind: 'slack',
+        name: source.name,
+      },
+      dedupeKey: `${source.id}:${normalized.eventInput.dedupeKey}`,
+    };
+    const result = await backend.ingestConnectorEvent(eventInput, source, projectEntry || undefined);
+    broadcast();
+    return sendJson(res, parsed.form ? 200 : 202, {
+      ok: true,
+      duplicate: result.duplicate,
+      response_type: 'ephemeral',
+      text: result.duplicate ? '这个请求已经在 Inbox 中。' : acknowledgement,
+      event: {
+        id: result.event.id,
+        kind: result.event.kind,
       },
     });
   }
@@ -620,6 +799,21 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
       return sendJson(res, 200, result);
     }
 
+    if (path === '/api/connectors/jira/sync' && method === 'POST') {
+      requireCapability('connectorSync', '同步 Jira');
+      const result = await backend.syncJira();
+      record(req, authorization, 'connector.jira.sync', `status=${result.status}`);
+      broadcast();
+      return sendJson(res, 200, {
+        ok: result.status === 'healthy',
+        status: result.status,
+        fetched: result.fetched || 0,
+        events: (result.events || []).length,
+        error: result.error || null,
+        nextSyncAt: result.nextSyncAt || null,
+      });
+    }
+
     const deliveryReplay = path.match(/^\/api\/outbox\/([^/]+)\/replay$/);
     if (deliveryReplay && method === 'POST') {
       requireCapability('outbox', '重投消息');
@@ -662,6 +856,8 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     try {
       if (url.pathname === '/hooks/github' && req.method === 'POST') {
         await handleGitHubWebhook(req, res);
+      } else if (url.pathname === '/hooks/slack' && req.method === 'POST') {
+        await handleSlackWebhook(req, res);
       } else if (url.pathname.startsWith('/api/')) {
         await handleApi(req, res, url);
       } else {

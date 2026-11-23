@@ -89,6 +89,13 @@ export class DemoBackend {
     return this.engine.ingestEvent(input);
   }
 
+  ingestConnectorEvent(input, source) {
+    return this.engine.ingestEvent({
+      ...input,
+      sourceId: source.id,
+    });
+  }
+
   answerTicket(id, answer, actor) {
     return this.engine.answerTicket(id, answer, actor);
   }

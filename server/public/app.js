@@ -1081,7 +1081,7 @@ function sourcesView() {
     <div class="page-head">
       <div>
         <h1 class="page-title">Sources</h1>
-        <p class="page-sub">连接器把外部事件归一化后写入 Inbox。Router 不直接读 Jira 或 GitHub。</p>
+        <p class="page-sub">连接器把外部事件归一化为 task 事件；Router 仍独立执行授权、lease 与门禁。</p>
       </div>
       <div class="page-actions">
         ${caps.sourceWrite ? `<button class="btn btn-primary" data-action="add-source" type="button">${icon('plus')} 添加连接器</button>` : ''}
@@ -1108,6 +1108,7 @@ function sourcesView() {
             </div>
             <div class="source-actions">
               ${caps.sourceWrite ? `<button class="btn btn-sm" data-action="toggle-source" data-id="${source.id}" type="button">${icon(source.status === 'paused' ? 'play' : 'pause')} ${source.status === 'paused' ? '恢复' : '暂停'}</button>` : ''}
+              ${caps.connectorSync && source.kind === 'jira' ? `<button class="btn btn-sm" data-action="sync-jira" type="button">${icon('refresh')} 立即同步</button>` : ''}
               <span class="dim" style="font-size:10px">created ${fmtDate(source.createdAt)}</span>
             </div>
           </article>`,
@@ -1119,8 +1120,8 @@ function sourcesView() {
       <p class="card-sub" style="font-size:11.5px;line-height:1.65;margin:6px 0 0">
         ${
           caps.mode === 'project'
-            ? '项目模式从真实 .loop 状态推导 Source。连接器配置仍由项目 .self-loop.json 和 Router CLI 管理，控制台只读。'
-            : '这一版把连接器、Inbox、Router、Worker、Verifier、Outbox 串起来。GitHub webhook 验签已接入；Jira / Slack OAuth、外部 API 限流和出站写回还没接。'
+            ? '项目模式从真实 .loop 状态推导 Source。GitHub、Slack 入站和 Jira 增量同步均已接入；连接器凭据仍由项目 .self-loop.json 和进程环境管理，控制台不读取 secret。'
+            : '这一版把连接器、Inbox、Router、Worker、Verifier、Outbox 串起来。GitHub / Slack 入站验签、Jira 增量同步和 Outbox 写回均已有可测试实现。'
         }
       </p>
     </div>
@@ -1544,7 +1545,7 @@ function openSourceModal() {
         <div class="modal-head">
           <div>
             <div class="modal-title" id="modal-title">添加连接器</div>
-            <div class="modal-sub">GitHub webhook 已支持验签；其他连接器的 OAuth 与出站调用仍在后续版本。</div>
+            <div class="modal-sub">演示模式只新增本地 Source 卡片；真实凭据由项目 .self-loop.json 与环境变量管理。</div>
           </div>
           <button class="btn btn-ghost btn-icon" data-action="close-modal" type="button" aria-label="关闭">${icon('x')}</button>
         </div>
@@ -1705,6 +1706,14 @@ async function handleAction(action, id) {
       const result = await api('/api/outbox/flush', { method: 'POST' });
       await refresh();
       toast(result.detail || 'Outbox 已投递');
+      return;
+    }
+    if (action === 'sync-jira') {
+      const result = await api('/api/connectors/jira/sync', { method: 'POST' });
+      await refresh();
+      toast(result.ok
+        ? `Jira 同步完成：${result.fetched} 个 issue，${result.events} 个事件`
+        : `Jira 同步失败：${result.error || result.status}`, result.ok ? 'success' : 'error');
       return;
     }
     if (action === 'close-modal') return closeModal();
