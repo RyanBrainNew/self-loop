@@ -354,6 +354,22 @@ The optional GitHub Actions adapter in `adapters/github-actions/` does exactly
 this for `issues`, `pull_request`, `issue_comment`, `workflow_dispatch`, and a
 fallback schedule.
 
+## Optional web console
+
+`server/` adds a local supervision surface without changing the Router
+contract. It runs its own demo Router over `.self-loop/state.json` and exposes
+Sources, Inbox, Tickets, Attempts, verification evidence, Outbox, Workers, and
+Policy through an HTTP API and a dependency-free web UI:
+
+```bash
+npm run serve
+# http://127.0.0.1:4317
+```
+
+The console is single-tenant, binds to `127.0.0.1`, and has no authentication.
+Do not expose it to a public network. Core scripts do not import `server/`;
+the console is an optional caller and not a replacement for `router tick`.
+
 ## Concurrency
 
 `router.maxConcurrent` counts Tickets in `queued`, `claimed`, `working`, or

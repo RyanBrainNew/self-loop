@@ -1,5 +1,6 @@
 node_modules/
 .loop/
+.self-loop/
 *.log
 .DS_Store
 .hallmark/

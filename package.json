@@ -11,6 +11,8 @@
   "scripts": {
     "test": "node --test",
     "test:skill": "node --test scripts/self-loop.test.mjs",
+    "test:server": "node --test server/server.test.mjs",
+    "serve": "node server/index.mjs",
     "setup": "node scripts/setup-project.mjs",
     "init-memory": "node scripts/init-memory.mjs"
   }
