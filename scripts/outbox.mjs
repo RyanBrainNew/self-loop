@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { loadSqliteOutbox, saveSqliteOutbox } from './sqlite-store.mjs';
 
 export const OUTBOX_VERSION = 1;
 export const OUTBOX_MARKER_PREFIX = '<!-- self-loop:outbox:';
@@ -41,6 +42,7 @@ export function emptyOutbox() {
 }
 
 export function loadOutbox(settings) {
+  if (settings.storage?.backend === 'sqlite') return loadSqliteOutbox(settings);
   const file = outboxPath(settings);
   if (!existsSync(file)) return emptyOutbox();
   const parsed = JSON.parse(readFileSync(file, 'utf8'));
@@ -54,11 +56,18 @@ export function loadOutbox(settings) {
 
 export function saveOutbox(settings, outbox, now = Date.now()) {
   outbox.updatedAt = nowIso(now);
+  if (settings.storage?.backend === 'sqlite') {
+    saveSqliteOutbox(settings, outbox);
+    return outbox;
+  }
   writeJsonAtomic(outboxPath(settings), outbox);
   return outbox;
 }
 
 function issueKey(ticket) {
+  if (ticket.externalKey && /^[A-Z][A-Z0-9]+-\d+$/.test(ticket.externalKey)) {
+    return ticket.externalKey;
+  }
   const source = `${ticket.url || ''} ${ticket.externalKey || ''}`;
   const match = source.match(/\b([A-Z][A-Z0-9]+-\d+)\b/);
   return match?.[1] || ticket.externalKey || String(ticket.number);
@@ -72,7 +81,8 @@ function messageBody(ticket, body, key) {
 function targetsFor({ settings, ticket }) {
   const adapters = settings.outbox.adapters;
   const targets = [];
-  if (adapters.github.enabled) {
+  const sourceKind = ticket.source?.kind || 'github';
+  if (adapters.github.enabled && sourceKind === 'github') {
     const repo = adapters.github.repo || settings.githubRepo;
     if (repo && ticket.number) {
       targets.push({
@@ -83,20 +93,24 @@ function targetsFor({ settings, ticket }) {
     }
   }
   if (adapters.jira.enabled) {
-    targets.push({
-      channel: 'jira',
-      target: issueKey(ticket),
-      config: { issueKey: issueKey(ticket) },
-    });
+    const key = issueKey(ticket);
+    if (sourceKind === 'jira' || /^[A-Z][A-Z0-9]+-\d+$/.test(key)) {
+      targets.push({
+        channel: 'jira',
+        target: key,
+        config: { issueKey: key },
+      });
+    }
   }
   if (adapters.slack.enabled) {
-    const channel = adapters.slack.channel || 'webhook';
+    const channel = ticket.connector?.channel || adapters.slack.channel || 'webhook';
+    const threadTs = ticket.connector?.threadTs || ticket.slackThreadTs || '';
     targets.push({
       channel: 'slack',
-      target: channel,
+      target: threadTs ? `${channel}:${threadTs}` : channel,
       config: {
-        channel: adapters.slack.channel || '',
-        threadTs: ticket.slackThreadTs || '',
+        channel: ticket.connector?.channel || adapters.slack.channel || '',
+        threadTs,
       },
     });
   }

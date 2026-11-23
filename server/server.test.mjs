@@ -15,6 +15,7 @@ import { ProjectStore } from './project-store.mjs';
 import { RouterEngine } from './router.mjs';
 import { createDemoState } from './seed.mjs';
 import { Store, nowIso } from './store.mjs';
+import { loadJiraCursor, syncJira } from './connectors/jira.mjs';
 
 const publicDir = fileURLToPath(new URL('./public', import.meta.url));
 
@@ -156,6 +157,50 @@ function issuePayload(action = 'opened', number = 42) {
       labels: [{ name: 'ready-for-agent' }, { name: 'high' }],
     },
   };
+}
+
+function slackSourceState() {
+  const state = minimalState();
+  state.sources = [
+    {
+      id: 'src_slack_test',
+      name: 'Slack test',
+      kind: 'slack',
+      status: 'healthy',
+      createdAt: nowIso(),
+      lastEventAt: null,
+      eventCount: 0,
+      health: 'test',
+      config: {
+        signingSecret: 'slack-secret',
+        respondToMessages: true,
+        allowedChannels: ['C123'],
+      },
+    },
+  ];
+  return state;
+}
+
+function slackSignedRequest(base, payload, {
+  secret = 'slack-secret',
+  timestamp = Math.floor(Date.now() / 1000),
+  contentType = 'application/json',
+} = {}) {
+  const raw = contentType === 'application/x-www-form-urlencoded'
+    ? new URLSearchParams(payload).toString()
+    : JSON.stringify(payload);
+  const signature = `v0=${createHmac('sha256', secret)
+    .update(`v0:${timestamp}:${raw}`)
+    .digest('hex')}`;
+  return fetch(`${base}/hooks/slack`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': contentType,
+      'X-Slack-Request-Timestamp': String(timestamp),
+      'X-Slack-Signature': signature,
+    },
+    body: raw,
+  });
 }
 
 test('tick consumes an event, creates a ticket, and claims it', () => {
@@ -377,6 +422,249 @@ test('GitHub webhook rejects invalid signatures without writing events', async (
     assert.equal(context.store.state.events.length, 0);
   } finally {
     await context.close();
+  }
+});
+
+test('Slack webhook verifies signatures, dedupes events, and keeps the thread target', async () => {
+  const context = await httpFixture(slackSourceState());
+  try {
+    const payload = {
+      type: 'event_callback',
+      team_id: 'T123',
+      event: {
+        type: 'app_mention',
+        user: 'U123',
+        channel: 'C123',
+        ts: '1700000000.000100',
+        thread_ts: '1700000000.000001',
+        text: '<@UBOT> Fix the login redirect',
+      },
+    };
+    const first = await slackSignedRequest(context.base, payload);
+    assert.equal(first.status, 202);
+    const firstBody = await first.json();
+    assert.equal(firstBody.duplicate, false);
+    assert.equal(firstBody.event.kind, 'task.created');
+    assert.equal(context.store.state.events.length, 1);
+    assert.equal(context.store.state.events[0].connector.threadTs, '1700000000.000001');
+
+    const replay = await slackSignedRequest(context.base, payload);
+    assert.equal(replay.status, 202);
+    assert.equal((await replay.json()).duplicate, true);
+    assert.equal(context.store.state.events.length, 1);
+
+    context.engine.tick(Date.now());
+    const ticket = context.store.state.tickets[0];
+    assert.equal(ticket.connector.threadTs, '1700000000.000001');
+  } finally {
+    await context.close();
+  }
+});
+
+test('Slack slash commands acknowledge immediately and reject stale signatures', async () => {
+  const context = await httpFixture(slackSourceState());
+  try {
+    const command = await slackSignedRequest(context.base, {
+      command: '/loop',
+      text: 'Add audit export | export works; audit has a test',
+      team_id: 'T123',
+      channel_id: 'C123',
+      user_id: 'U123',
+      trigger_id: 'trigger-1',
+    }, { contentType: 'application/x-www-form-urlencoded' });
+    assert.equal(command.status, 200);
+    const commandBody = await command.json();
+    assert.equal(commandBody.response_type, 'ephemeral');
+    assert.match(commandBody.text, /Add audit export/);
+    assert.equal(context.store.state.events.length, 1);
+    assert.deepEqual(context.store.state.events[0].acceptance, [
+      'export works',
+      'audit has a test',
+    ]);
+
+    const disallowed = await slackSignedRequest(context.base, {
+      command: '/loop',
+      text: 'This channel is not allowed',
+      team_id: 'T123',
+      channel_id: 'C999',
+      user_id: 'U123',
+      trigger_id: 'trigger-2',
+    }, { contentType: 'application/x-www-form-urlencoded' });
+    assert.equal(disallowed.status, 200);
+    assert.match((await disallowed.json()).ignoredReason, /not allowed/);
+    assert.equal(context.store.state.events.length, 1);
+
+    const stale = await slackSignedRequest(context.base, {
+      type: 'url_verification',
+      challenge: 'challenge',
+    }, { timestamp: Math.floor(Date.now() / 1000) - 600 });
+    assert.equal(stale.status, 401);
+
+    context.store.state.sources[0].config.signingSecret = 'wrong-secret';
+    const invalid = await slackSignedRequest(context.base, {
+      type: 'url_verification',
+      challenge: 'challenge',
+    }, { secret: 'slack-secret' });
+    assert.equal(invalid.status, 401);
+  } finally {
+    await context.close();
+  }
+});
+
+test('Jira sync paginates, persists its cursor, and keeps event ids stable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'self-loop-jira-'));
+  const config = {
+    enabled: true,
+    baseUrl: 'https://jira.example',
+    email: 'loop@example.com',
+    tokenEnv: 'TEST_JIRA_TOKEN',
+    project: 'LOOP',
+    jql: '',
+    pollMinutes: 5,
+    initialLookbackMinutes: 1440,
+    pageSize: 1,
+    fieldMap: {
+      title: 'custom.title',
+      body: 'description',
+      acceptance: 'custom.acceptance',
+      priority: 'priority.name',
+      labels: 'labels',
+      status: 'status.name',
+    },
+  };
+  const requests = [];
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    requests.push(parsed);
+    const startAt = Number(parsed.searchParams.get('startAt'));
+    const issues = [
+      {
+        key: 'LOOP-1',
+        fields: {
+          custom: { title: 'First Jira task', acceptance: ['one', 'two'] },
+          description: 'first body',
+          priority: { name: 'High' },
+          labels: ['agent-ready'],
+          status: { name: 'Open' },
+          updated: '2026-11-23T01:00:00.000Z',
+          creator: { displayName: 'Alice' },
+        },
+      },
+      {
+        key: 'LOOP-2',
+        fields: {
+          custom: { title: 'Second Jira task' },
+          description: 'second body',
+          priority: { name: 'Low' },
+          labels: [],
+          status: { name: 'In Progress' },
+          updated: '2026-11-23T02:00:00.000Z',
+          creator: { displayName: 'Bob' },
+        },
+      },
+    ];
+    return new Response(JSON.stringify({
+      startAt,
+      total: issues.length,
+      issues: issues.slice(startAt, startAt + 1),
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    const firstEvents = [];
+    const first = await syncJira({
+      outDir: dir,
+      config,
+      env: { TEST_JIRA_TOKEN: 'token' },
+      fetchImpl,
+      now: Date.parse('2026-11-23T03:00:00.000Z'),
+      applyEvent: async (event) => firstEvents.push(event),
+    });
+    assert.equal(first.status, 'healthy');
+    assert.equal(first.fetched, 2);
+    assert.equal(firstEvents.length, 2);
+    assert.equal(firstEvents[0].title, 'First Jira task');
+    assert.deepEqual(firstEvents[0].acceptance, ['one', 'two']);
+    assert.equal(firstEvents[1].kind, 'jira.issue.created');
+    assert.ok(requests.every((request) => request.searchParams.get('jql').includes('updated >=')));
+
+    const cursor = loadJiraCursor(dir);
+    assert.equal(cursor.updatedAt, '2026-11-23T02:00:00.000Z');
+    assert.equal(cursor.issues['LOOP-1'].status, 'Open');
+
+    const secondEvents = [];
+    const second = await syncJira({
+      outDir: dir,
+      config,
+      env: { TEST_JIRA_TOKEN: 'token' },
+      fetchImpl,
+      now: Date.parse('2026-11-23T04:00:00.000Z'),
+      applyEvent: async (event) => secondEvents.push(event),
+    });
+    assert.equal(second.status, 'healthy');
+    assert.deepEqual(
+      secondEvents.map((event) => event.externalId),
+      firstEvents.map((event) => event.externalId),
+    );
+    assert.equal(new Set(secondEvents.map((event) => event.externalId)).size, 2);
+    assert.match(
+      requests.at(-1).searchParams.get('jql'),
+      /updated >= "2026\/11\/23 01:59"/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('Jira sync exposes 429 and authentication failures without advancing the cursor', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'self-loop-jira-error-'));
+  const config = {
+    enabled: true,
+    baseUrl: 'https://jira.example',
+    email: 'loop@example.com',
+    tokenEnv: 'TEST_JIRA_TOKEN',
+    project: 'LOOP',
+    pollMinutes: 5,
+    initialLookbackMinutes: 1440,
+    pageSize: 50,
+    fieldMap: {
+      title: 'summary',
+      body: 'description',
+      acceptance: '',
+      priority: 'priority.name',
+      labels: 'labels',
+      status: 'status.name',
+    },
+  };
+  try {
+    const limited = await syncJira({
+      outDir: dir,
+      config,
+      env: { TEST_JIRA_TOKEN: 'token' },
+      fetchImpl: async () => new Response('{}', {
+        status: 429,
+        headers: { 'retry-after': '60' },
+      }),
+    });
+    assert.equal(limited.status, 'degraded');
+    assert.equal(limited.statusCode, 429);
+    assert.ok(limited.nextSyncAt);
+    assert.equal(loadJiraCursor(dir).updatedAt, null);
+
+    const missingToken = await syncJira({
+      outDir: dir,
+      config,
+      env: {},
+      fetchImpl: async () => {
+        throw new Error('should not call the network');
+      },
+    });
+    assert.equal(missingToken.status, 'auth_error');
+    assert.match(missingToken.error, /TEST_JIRA_TOKEN/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -627,10 +915,16 @@ function coreState(number, title, state = 'blocked') {
   };
 }
 
-function projectDirectory(number, title, state) {
+function projectDirectory(number, title, state, {
+  githubRepo = 'acme/real',
+  connectors = null,
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'self-loop-project-'));
   mkdirSync(join(dir, '.loop'), { recursive: true });
-  writeFileSync(join(dir, '.self-loop.json'), `${JSON.stringify({ githubRepo: 'acme/real' }, null, 2)}\n`);
+  writeFileSync(join(dir, '.self-loop.json'), `${JSON.stringify({
+    githubRepo,
+    ...(connectors ? { connectors } : {}),
+  }, null, 2)}\n`);
   const at = nowIso();
   writeFileSync(join(dir, '.loop', 'state.json'), `${JSON.stringify(coreState(number, title, state), null, 2)}\n`);
   writeFileSync(
@@ -686,10 +980,21 @@ function projectDirectory(number, title, state) {
   return dir;
 }
 
-async function projectFixture(count = 1) {
+async function projectFixture(count = 1, {
+  repos = [],
+  connectors = [],
+} = {}) {
   const dirs = [];
   for (let index = 0; index < count; index += 1) {
-    dirs.push(projectDirectory(70 + index, `Real ticket ${index + 1}`, 'blocked'));
+    dirs.push(projectDirectory(
+      70 + index,
+      `Real ticket ${index + 1}`,
+      'blocked',
+      {
+        githubRepo: repos[index] || 'acme/real',
+        connectors: connectors[index] || null,
+      },
+    ));
   }
   const storeFile = join(dirs[0], 'projects.json');
   const store = new ProjectStore(storeFile);
@@ -846,6 +1151,176 @@ test('project mode can switch between allowlisted repositories from the UI API',
     assert.equal(last.status, 409);
   } finally {
     await context.close();
+  }
+});
+
+test('project mode posts Slack and Jira tasks through the Router CLI', async () => {
+  const context = await projectFixture();
+  try {
+    const slack = await context.backend.ingestConnectorEvent({
+      kind: 'task.created',
+      title: 'Slack task from project mode',
+      body: '## Acceptance\n- [ ] works',
+      acceptance: ['works'],
+      externalId: 'slack:C1:1700000000.000100',
+      dedupeKey: 'src_slack:slack:C1:1700000000.000100',
+      connector: { channel: 'C1', threadTs: '1700000000.000001' },
+    }, {
+      id: 'src_slack',
+      kind: 'slack',
+      name: 'Slack',
+    });
+    assert.equal(slack.duplicate, false);
+    const duplicate = await context.backend.ingestConnectorEvent({
+      kind: 'task.created',
+      title: 'Slack task from project mode',
+      externalId: 'slack:C1:1700000000.000100',
+      dedupeKey: 'src_slack:slack:C1:1700000000.000100',
+    }, {
+      id: 'src_slack',
+      kind: 'slack',
+      name: 'Slack',
+    });
+    assert.equal(duplicate.duplicate, true);
+
+    const entry = context.registry.current();
+    entry.settings.connectors.jira = {
+      enabled: true,
+      baseUrl: 'https://jira.example',
+      email: 'loop@example.com',
+      tokenEnv: 'TEST_PROJECT_JIRA_TOKEN',
+      project: 'LOOP',
+      jql: '',
+      pollMinutes: 5,
+      initialLookbackMinutes: 1440,
+      pageSize: 50,
+      fieldMap: {
+        title: 'summary',
+        body: 'description',
+        acceptance: '',
+        priority: 'priority.name',
+        labels: 'labels',
+        status: 'status.name',
+      },
+    };
+    context.registry.env.TEST_PROJECT_JIRA_TOKEN = 'token';
+    const jira = await context.backend.syncJira(entry, {
+      now: Date.parse('2026-11-23T03:00:00.000Z'),
+      fetchImpl: async () => new Response(JSON.stringify({
+        startAt: 0,
+        total: 1,
+        issues: [{
+          key: 'LOOP-9',
+          fields: {
+            summary: 'Jira task from project mode',
+            description: '## Acceptance\n- [ ] works',
+            priority: { name: 'High' },
+            labels: ['agent-ready'],
+            status: { name: 'Open' },
+            updated: '2026-11-23T02:00:00.000Z',
+          },
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    });
+    assert.equal(jira.status, 'healthy');
+    const inbox = JSON.parse(readFileSync(
+      join(context.dirs[0], '.loop', 'inbox.json'),
+      'utf8',
+    ));
+    assert.ok(inbox.events.some((event) => event.type === 'task'
+      && event.payload?.source?.kind === 'slack'));
+    assert.ok(inbox.events.some((event) => event.type === 'task'
+      && event.payload?.externalKey === 'LOOP-9'));
+  } finally {
+    await context.close();
+  }
+});
+
+test('project mode routes GitHub webhooks to the project that owns the repository', async () => {
+  const previous = process.env.TEST_GH_TWO;
+  process.env.TEST_GH_TWO = 'repo-two-secret';
+  const context = await projectFixture(2, {
+    repos: ['acme/one', 'acme/two'],
+    connectors: [null, { github: { webhookSecretEnv: 'TEST_GH_TWO' } }],
+  });
+  try {
+    const payload = issuePayload('opened', 71);
+    payload.repository.full_name = 'acme/two';
+    const response = await githubRequest(context.base, {
+      payload,
+      secret: 'repo-two-secret',
+    });
+    assert.equal(response.status, 202);
+    const first = JSON.parse(readFileSync(join(context.dirs[0], '.loop', 'inbox.json'), 'utf8'));
+    const second = JSON.parse(readFileSync(join(context.dirs[1], '.loop', 'inbox.json'), 'utf8'));
+    assert.equal(first.events.length, 1);
+    assert.equal(second.events.length, 2);
+    assert.equal(second.events.at(-1).type, 'issue');
+    assert.equal(second.events.at(-1).action, 'opened');
+  } finally {
+    await context.close();
+    if (previous === undefined) delete process.env.TEST_GH_TWO;
+    else process.env.TEST_GH_TWO = previous;
+  }
+});
+
+test('project mode routes Slack webhooks by per-project signing secret', async () => {
+  const previous = {
+    TEST_SLACK_ONE: process.env.TEST_SLACK_ONE,
+    TEST_SLACK_TWO: process.env.TEST_SLACK_TWO,
+  };
+  process.env.TEST_SLACK_ONE = 'secret-one';
+  process.env.TEST_SLACK_TWO = 'secret-two';
+  const context = await projectFixture(2, {
+    repos: ['acme/one', 'acme/two'],
+    connectors: [
+      {
+        slack: {
+          enabled: true,
+          signingSecretEnv: 'TEST_SLACK_ONE',
+          allowedChannels: ['C111'],
+        },
+      },
+      {
+        slack: {
+          enabled: true,
+          signingSecretEnv: 'TEST_SLACK_TWO',
+          allowedChannels: ['C222'],
+        },
+      },
+    ],
+  });
+  try {
+    const payload = {
+      type: 'event_callback',
+      team_id: 'T1',
+      event: {
+        type: 'app_mention',
+        user: 'U1',
+        channel: 'C222',
+        ts: '1700000000.000200',
+        thread_ts: '1700000000.000100',
+        text: '<@UBOT> Route this to project two',
+      },
+    };
+    const response = await slackSignedRequest(context.base, payload, {
+      secret: 'secret-two',
+    });
+    assert.equal(response.status, 202);
+    const first = JSON.parse(readFileSync(join(context.dirs[0], '.loop', 'inbox.json'), 'utf8'));
+    const second = JSON.parse(readFileSync(join(context.dirs[1], '.loop', 'inbox.json'), 'utf8'));
+    assert.equal(first.events.length, 1);
+    assert.equal(second.events.length, 2);
+    assert.equal(
+      second.events.at(-1).payload.externalId,
+      'slack:T1:C222:1700000000.000200',
+    );
+  } finally {
+    await context.close();
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });
 

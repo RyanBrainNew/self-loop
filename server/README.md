@@ -85,6 +85,10 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 - `POST /api/tickets/:id/cancel` runs `node scripts/router.mjs cancel`.
 - `POST /api/outbox/flush` runs `node scripts/router.mjs outbox flush`.
 - `POST /api/outbox/:id/replay` runs `node scripts/router.mjs outbox retry`.
+- `POST /api/connectors/jira/sync` runs one Jira incremental scan and posts
+  normalized events through `router post --type task`.
+- Slack `POST /hooks/slack` is signature-verified and also posts a durable
+  `task` event through the Router lock boundary.
 - Demo-only actions return `409`: pause, event injection, source/worker edits,
   config edits, answer, and approve.
 - The Router remains the only writer of Ticket state. The console does not
@@ -120,6 +124,7 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 | `GET` | `/api/outbox` | delivery queue |
 | `POST` | `/api/outbox/flush` | send due deliveries |
 | `POST` | `/api/outbox/:id/replay` | requeue a failed/dead delivery |
+| `POST` | `/api/connectors/jira/sync` | run one Jira incremental sync |
 | `GET` | `/api/workers` | worker pool |
 | `POST` | `/api/workers/:id/toggle` | pause/resume a worker (demo only) |
 | `GET` | `/api/sources` | connectors |
@@ -127,6 +132,7 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 | `PATCH` | `/api/sources/:id` | update connector config (demo only) |
 | `POST` | `/api/sources/:id/toggle` | pause/resume a connector (demo only) |
 | `POST` | `/hooks/github` | signed GitHub webhook ingress |
+| `POST` | `/hooks/slack` | signed Slack Events API / `/loop` ingress |
 | `GET` | `/api/audit` | Router audit plus console write audit |
 | `GET` | `/api/config` | resolved runtime config |
 | `PATCH` | `/api/config` | update runtime config (demo only) |
@@ -135,8 +141,11 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 ## GitHub webhook
 
 Demo mode configures the secret on the GitHub Source. Project mode reads
-`SELF_LOOP_GITHUB_WEBHOOK_SECRET` or `GITHUB_WEBHOOK_SECRET`; it writes the
-event into the real `.loop/inbox.json` through `router post`.
+`connectors.github.webhookSecretEnv` (default
+`SELF_LOOP_GITHUB_WEBHOOK_SECRET`, falling back to
+`GITHUB_WEBHOOK_SECRET`), selects the registered project by
+`repository.full_name`, and writes the event into that project's real
+`.loop/inbox.json` through `router post`.
 
 ```powershell
 $body = @{ config = @{ webhookSecret = $env:GITHUB_WEBHOOK_SECRET } } | ConvertTo-Json
@@ -155,6 +164,62 @@ Supported issue actions are `opened`, `reopened`, `labeled`, and `edited`.
 do not create a new Ticket. Every delivery is deduplicated by
 `X-GitHub-Delivery`.
 
+## Slack ingress
+
+Enable Slack in `.self-loop.json`:
+
+```json
+{
+  "connectors": {
+    "slack": {
+      "enabled": true,
+      "signingSecretEnv": "SLACK_SIGNING_SECRET",
+      "botTokenEnv": "SLACK_BOT_TOKEN",
+      "allowedChannels": ["C01234567"],
+      "respondToMessages": false
+    }
+  }
+}
+```
+
+Point the Slack app at `http://<local-host>:4317/hooks/slack`. The handler:
+
+- verifies `X-Slack-Signature` against the raw body and rejects timestamps more
+  than five minutes old;
+- selects the registered project by per-project signing secret (and
+  `allowedChannels` when several projects match);
+- answers `url_verification`;
+- accepts `app_mention`, configured `message` events, and `/loop`;
+- deduplicates on team + channel + timestamp, or slash-command `trigger_id`;
+- returns an immediate ephemeral acknowledgement for `/loop`;
+- forwards `task` events through the Router and preserves channel + `thread_ts`
+  so Outbox replies stay in the thread.
+
+Slash syntax:
+
+```text
+/loop Fix login redirect | redirect works; regression test added
+```
+
+## Jira incremental sync
+
+Jira configuration lives under `connectors.jira`; the token stays in the named
+environment variable. The console polls each registered project at
+`pollMinutes`, and the Sources page has a manual **立即同步** action.
+
+The key/value pairs live at `.loop/connectors/jira.json`. The connector:
+
+- combines the configured JQL with an incremental `updated >=` clause;
+- follows Jira pagination and maps title/body/acceptance/priority/labels/status
+  from `fieldMap`;
+- creates `jira.issue.created`, `jira.issue.transitioned`, or
+  `jira.issue.updated` task events;
+- advances its cursor only after the full scan succeeds;
+- surfaces 429, authentication, and network errors as `degraded` without losing
+  the previous cursor.
+
+Jira status never substitutes for a Router gate or a Verifier result.
+
 ## What is real
 
 - Demo Router: events, Tickets, Attempts, deliveries, workers, and audit state.
@@ -163,12 +228,18 @@ do not create a new Ticket. Every delivery is deduplicated by
 - Deduplication, event consumption, concurrency limits, leases, retries, dead
   letters, and human handoff.
 - GitHub webhook raw-body HMAC-SHA256 verification and delivery-id dedupe.
+- Slack raw-body signing-secret verification, replay window, `/loop`, and
+  thread-aware writeback.
+- Jira incremental polling with a durable cursor, field mapping, pagination,
+  429 backoff visibility, and auth-error degradation.
 - Local write token, same-origin session, Origin checks, rotation, and audit.
 - Persistent multi-repository registry, project switching, add/remove.
 - Executor adapter registration, timeouts, process-death detection, and cancel.
 - Real GitHub/Jira/Slack Outbox adapters with retry, 429 backoff, dead-letter,
   request ids, and stable idempotency keys.
 - SSE live updates and the HTTP API.
+- Optional SQLite storage with transactional Ticket/Inbox/Outbox writes,
+  migration, JSON mirror, and database-enforced unique idempotency keys.
 
 ## What is simulated or absent
 
@@ -176,10 +247,12 @@ do not create a new Ticket. Every delivery is deduplicated by
   only through `router tick`, never from the web process.
 - Demo Verifier evidence is synthetic; project mode surfaces real verifier
   evidence when the Router has written it.
-- Jira and Slack inbound connectors still store configuration only in demo mode;
-  their Outbox delivery paths are real when configured in `.self-loop.json`.
-- The JSON store is single-process. There is no database, multi-tenancy, SSO,
-  RBAC, or hosted deployment.
+- Demo connector cards and their event feed remain synthetic.
+- Jira polling and Slack webhook handlers are implemented, but hosted OAuth app
+  installation, secret rotation, and multi-tenant credential storage are not.
+- SQLite is optional and single-machine. The default JSON store remains the
+  compatibility path; there is no PostgreSQL, multi-tenancy, SSO, RBAC, or
+  hosted deployment.
 
 ## Design boundaries
 

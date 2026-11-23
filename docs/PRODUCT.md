@@ -99,6 +99,8 @@ Outbox 负责把执行结果送回外部系统，例如：
 - 项目注册表默认在 `~/.self-loop/projects.json`，一个地址统一管理多个仓库；
 - 项目模式直接读取目标仓库 `.loop/state.json`、`.loop/inbox.json` 与
   `.loop/outbox.json`，不复制 Ticket 状态；
+- 单机并发写可选择 SQLite（`storage.backend: "sqlite"`），JSON 保留为可读
+  镜像；事件 id 和 Outbox 幂等键有数据库唯一约束；
 - 默认只绑定 `127.0.0.1`；
 - 首次启动生成仅当前用户可读的本地 write token；浏览器使用同源 HttpOnly
   会话，CLI 使用 Bearer token；
@@ -145,14 +147,19 @@ MVP 中以下能力是真实的：
 - Source / Worker 开关和审计记录（demo）；
 - 本地 write token、同源会话、Origin 校验、轮换和写审计；
 - SSE 实时刷新和 HTTP API；
-- GitHub webhook 原始报文验签、delivery 去重和 issue 事件归一化。
+- GitHub / Slack webhook 原始报文验签、时间戳窗口、delivery 去重和事件归一化；
+- Slack `/loop` 命令、即时确认和 channel/thread 回写；
+- Jira 增量轮询、持久化 cursor、字段映射、分页、429 退避可见性和认证失败降级；
+- 可选 SQLite 存储、JSON 迁移/导出和双进程 Ticket 写入测试；
+- 真实 executor 端到端 harness（需要本机 Codex/Claude 登录）。
 
 以下能力目前是模拟的：
 
 - demo 模式的 Worker 执行是定时器，不是 agent；
 - demo 模式的 Verifier 证据是合成的；
-- Jira / Slack 的入站 OAuth 与事件接入；
-- hosted 身份、RBAC、数据库和多租户隔离。
+- Jira / Slack 的托管 OAuth 安装、secret rotation 和多租户凭据存储；
+- hosted 身份、RBAC、PostgreSQL 和多租户隔离。
+- 真实 Codex/Claude E2E 的验收运行；harness 已存在，但需要对应的 CLI 登录。
 
 ## 产品边界
 
@@ -172,4 +179,7 @@ MVP 中以下能力是真实的：
 - [Multi-project console ADR](adr/0010-multi-project-console.md)
 - [Executor adapters ADR](adr/0011-executor-adapters.md)
 - [Durable Outbox ADR](adr/0012-durable-outbox.md)
+- [Hosted multi-tenant ADR](adr/0013-hosted-multi-tenant-architecture.md)
+- [Optional SQLite store ADR](adr/0014-optional-sqlite-store.md)
+- [Connector ingress ADR](adr/0015-connector-ingress.md)
 - [Router protocol](../references/ROUTER.md)

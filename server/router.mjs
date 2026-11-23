@@ -218,6 +218,7 @@ export class RouterEngine {
         : ['通过项目现有检查', 'PR 描述包含可复核的验证证据'],
       scope: event.scope?.length ? event.scope : ['待 Planner 补全'],
       risk: event.risk || 'medium',
+      connector: event.connector || null,
       sourceEventId: event.id,
       createdAt: at,
       updatedAt: at,
@@ -496,12 +497,15 @@ export class RouterEngine {
   }
 
   enqueueDelivery(ticket, channel, target, kind, now) {
+    const resolvedTarget = channel === 'slack' && ticket.connector?.channel
+      ? `${ticket.connector.channel}${ticket.connector.threadTs ? `:${ticket.connector.threadTs}` : ''}`
+      : target;
     const delivery = {
       id: makeId('dlv'),
       ticketId: ticket.id,
       ticketNumber: ticket.number,
       channel,
-      target,
+      target: resolvedTarget,
       kind,
       state: 'pending',
       attempts: 0,
@@ -520,7 +524,7 @@ export class RouterEngine {
       entityId: delivery.id,
       ticketId: ticket.id,
       ticketNumber: ticket.number,
-      detail: `${kind} → ${target}`,
+      detail: `${kind} → ${resolvedTarget}`,
       tone: 'muted',
     }, now);
     return delivery;
@@ -693,6 +697,7 @@ export class RouterEngine {
       acceptance: input.acceptance || [],
       scope: input.scope || [],
       risk: input.risk || 'medium',
+      connector: input.connector || null,
       status: ignoredReason ? 'ignored' : 'pending',
       receivedAt: at,
       consumedAt: ignoredReason ? at : null,

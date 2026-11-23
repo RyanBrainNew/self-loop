@@ -26,6 +26,7 @@ node "$SKILL_DIR/scripts/run.mjs" router report   --repo "$TARGET_REPO" --file r
 node "$SKILL_DIR/scripts/run.mjs" router recover  --repo "$TARGET_REPO" --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" router cancel   --repo "$TARGET_REPO" --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" router outbox   --repo "$TARGET_REPO" flush
+node "$SKILL_DIR/scripts/migrate-store.mjs" --repo "$TARGET_REPO" --dry-run
 node "$SKILL_DIR/scripts/run.mjs" router clean    --repo "$TARGET_REPO" --ticket 42
 node "$SKILL_DIR/scripts/run.mjs" router watchdog --repo "$TARGET_REPO"
 ```
@@ -74,6 +75,9 @@ relative to that root, never relative to the directory that launched Node.
   state.json
   inbox.json
   outbox.json
+  self-loop.db             # only when storage.backend=sqlite
+  connectors/
+    jira.json              # Jira incremental cursor and health
   lock
   tickets/
     42.json
@@ -159,11 +163,38 @@ Event types:
 | `verify` | Wake-up; the next tick verifies any `verifying` Ticket. |
 | `recover`, `clean` | Runs the same operation as the CLI command for one Ticket. |
 | `schedule`, `control`, `manual` | Wake-up or an explicit `action: recover|clean|noop`. |
+| `task` | Creates one external Ticket from a normalized Slack, Jira, or generic connector task. |
 
 Posting the same `--id` twice is a no-op. A failed event is marked handled with
 `outcome: "error"` and `error`; it does not block later events. Re-post it with
 a new id after fixing the cause. Handled events beyond `router.inboxLimit` are
 pruned oldest-first; pending events are never pruned.
+
+External task events use `type: "task"` and carry a stable `externalId`,
+`source`, title/body, acceptance criteria, and connector metadata:
+
+```json
+{
+  "type": "task",
+  "action": "created",
+  "payload": {
+    "source": { "id": "src_slack", "kind": "slack", "name": "Slack" },
+    "externalId": "slack:T123:C123:1700000000.000100",
+    "externalKey": "C123-1700000000.000100",
+    "title": "Fix login redirect",
+    "body": "## Acceptance\n- [ ] redirect works",
+    "acceptance": ["redirect works"],
+    "connector": {
+      "channel": "C123",
+      "threadTs": "1700000000.000001"
+    }
+  }
+}
+```
+
+The Router allocates a local Ticket number at or above `100000`, records the
+external source/key, and deduplicates on source + `externalId`. The event still
+does not bypass Task Card, acceptance, lease, verifier, or retry gates.
 
 ## Lifecycle
 
@@ -368,6 +399,54 @@ GitHub and Jira are checked for the marker before posting. `2xx` is success,
 `429` uses `Retry-After` or backoff, `5xx` and network errors retry, and
 authentication/permanent `4xx` errors go to dead-letter. The queue lives in
 `.loop/outbox.json`; it is not a second Ticket state.
+
+Slack deliveries preserve the originating channel and `thread_ts`. Jira
+deliveries target `externalKey`; GitHub delivery is used only for GitHub-sourced
+Tickets.
+
+## Inbound connectors
+
+Slack ingress is implemented by the optional console:
+
+- `POST /hooks/slack` verifies the raw-body Slack signature and five-minute
+  timestamp window;
+- Events API `app_mention` / `message` payloads and `/loop` form commands become
+  `task` events;
+- deduplication uses channel + `ts`, or the slash-command `trigger_id`;
+- `/loop <title> | <criterion>; <criterion>` returns an immediate ephemeral
+  acknowledgement.
+
+Jira is a polling connector. The console/runtime calls `syncJira` and posts each
+normalized event through `router post --type task`. The query is the configured
+JQL plus an incremental `updated` clause. `.loop/connectors/jira.json` stores
+the cursor, observed key/status pairs, last sync, and last error. The cursor only
+advances after every page succeeds; a 429 or auth failure is visible but cannot
+discard the previous cursor.
+
+Each distinct Jira issue revision and status is a separate task keyed by issue
+key, `updated`, and status. A Jira status change creates new work; it never
+mutates the previous Router Ticket or substitutes for a Router gate.
+
+Connector events never replace GitHub eligibility or Router gates.
+
+## Optional SQLite store
+
+Set `storage.backend: "sqlite"` on a Node version with `node:sqlite`. The
+database is canonical for state, Tickets, Inbox events, and Outbox deliveries;
+JSON files are mirrored for inspection and project-mode console reads.
+
+```bash
+node "$SKILL_DIR/scripts/migrate-store.mjs" --repo "$TARGET_REPO" --dry-run
+node "$SKILL_DIR/scripts/migrate-store.mjs" --repo "$TARGET_REPO"
+node "$SKILL_DIR/scripts/run.mjs" router tick --repo "$TARGET_REPO" --storage sqlite
+node "$SKILL_DIR/scripts/migrate-store.mjs" --repo "$TARGET_REPO" --export
+```
+
+Migration writes a new SQLite file in a transaction and never deletes the JSON
+source. A failure rolls back the database transaction. `events.id` and
+`deliveries.idempotency_key` are unique. WAL and `busy_timeout` allow separate
+processes to write distinct Tickets; the Router still owns the state lock and
+serializes its own read-modify-write cycle.
 
 ## Independent verification
 

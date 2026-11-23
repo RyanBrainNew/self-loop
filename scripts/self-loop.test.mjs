@@ -84,6 +84,7 @@ import {
   loadOutbox,
   retryOutboxDelivery,
 } from './outbox.mjs';
+import { sqliteAvailable } from './sqlite-store.mjs';
 
 const now = Date.parse('2026-11-13T08:00:00Z');
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url));
@@ -911,6 +912,75 @@ test('Router tick creates a Ticket but does not consume an Attempt without an ex
   const state = loadState(settings);
   assert.equal(state.tickets['7'].state, 'queued');
   assert.equal(state.tickets['7'].attempts, 0);
+});
+
+test('a task inbox event creates one external Ticket with connector metadata', async () => {
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, { worktreeMode: 'external' }, {});
+  appendEvent(settings, {
+    type: 'task',
+    action: 'created',
+    id: 'slack:event:one',
+    payload: {
+      source: { id: 'src_slack', kind: 'slack', name: 'Slack' },
+      externalId: 'slack:C1:1700000000.000100',
+      externalKey: 'C1-1700000000.000100',
+      title: 'Slack task',
+      body: '## Acceptance\n- [ ] works',
+      acceptance: ['works'],
+      connector: { channel: 'C1', threadTs: '1700000000.000001' },
+    },
+  });
+  await tickRouter({ repoRoot: repo, settings });
+  const created = Object.values(loadState(settings).tickets)[0];
+  assert.equal(created.source.kind, 'slack');
+  assert.equal(created.connector.threadTs, '1700000000.000001');
+
+  appendEvent(settings, {
+    type: 'task',
+    action: 'created',
+    id: 'slack:event:duplicate',
+    payload: {
+      source: { id: 'src_slack', kind: 'slack', name: 'Slack' },
+      externalId: 'slack:C1:1700000000.000100',
+      title: 'Duplicate task',
+    },
+  });
+  await tickRouter({ repoRoot: repo, settings });
+  const state = loadState(settings);
+  assert.equal(Object.keys(state.tickets).length, 1);
+});
+
+test('Router can keep Ticket state in SQLite while exporting JSON', async () => {
+  if (!sqliteAvailable()) return;
+  const repo = tempRepo();
+  const settings = resolveSettings(repo, {
+    worktreeMode: 'external',
+    storageBackend: 'sqlite',
+    sqlitePath: join(repo, '.loop', 'state.db'),
+  }, {});
+  appendEvent(settings, {
+    type: 'task',
+    action: 'created',
+    id: 'jira:event:1',
+    payload: {
+      source: { id: 'src_jira', kind: 'jira', name: 'Jira' },
+      externalId: 'jira:LOOP-1:2026-11-23T00:00:00Z:Open',
+      externalKey: 'LOOP-1',
+      title: 'Jira task',
+      body: '## Acceptance\n- [ ] works',
+      acceptance: ['works'],
+    },
+  });
+  await tickRouter({ repoRoot: repo, settings });
+  const state = loadState(settings);
+  const ticket = Object.values(state.tickets)[0];
+  assert.equal(ticket.externalKey, 'LOOP-1');
+  assert.equal(ticket.source.kind, 'jira');
+  assert.equal(existsSync(join(repo, '.loop', 'state.db')), true);
+  assert.equal(existsSync(join(repo, '.loop', 'state.json')), true);
+  const mirror = JSON.parse(readFileSync(join(repo, '.loop', 'state.json'), 'utf8'));
+  assert.equal(Object.keys(mirror.tickets).length, 1);
 });
 
 test('Router tick dry-run previews without creating a Ticket or Attempt', async () => {

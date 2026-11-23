@@ -56,6 +56,11 @@ import {
   outboxSummary,
   retryOutboxDelivery,
 } from './outbox.mjs';
+import {
+  loadSqliteState,
+  saveSqliteState,
+  saveSqliteTicket,
+} from './sqlite-store.mjs';
 
 export const ROUTER_STATE_VERSION = 1;
 export const STATUS_MARKER = '<!-- self-loop:status -->';
@@ -127,6 +132,7 @@ export function emptyState(settings) {
 }
 
 export function loadState(settings) {
+  if (settings.storage?.backend === 'sqlite') return loadSqliteState(settings);
   const state = readJson(statePath(settings), emptyState(settings));
   if (!state || typeof state !== 'object' || Array.isArray(state)) {
     throw new Error('router state must be a JSON object');
@@ -143,6 +149,10 @@ export function loadState(settings) {
 export function saveState(settings, state) {
   mkdirSync(settings.outDir, { recursive: true });
   state.updatedAt = nowIso();
+  if (settings.storage?.backend === 'sqlite') {
+    saveSqliteState(settings, state);
+    return;
+  }
   writeJsonAtomic(statePath(settings), state);
 }
 
@@ -210,6 +220,10 @@ function ticketPath(settings, ticket) {
 
 function saveTicket(settings, ticket) {
   mkdirSync(join(settings.outDir, 'tickets'), { recursive: true });
+  if (settings.storage?.backend === 'sqlite') {
+    saveSqliteTicket(settings, ticket);
+    return;
+  }
   writeJsonAtomic(ticketPath(settings, ticket), ticket);
 }
 
@@ -277,6 +291,15 @@ export function createTicket(candidate, settings, now = Date.now()) {
     labels: labelNames(candidate.labels || []),
     repo: settings.githubRepo || '',
     language: settings.language,
+    source: candidate.source || {
+      id: 'github',
+      kind: 'github',
+      name: 'GitHub Issues',
+    },
+    externalId: candidate.externalId || `GH-${number}`,
+    externalKey: candidate.externalKey || String(number),
+    sourceUrl: candidate.sourceUrl || candidate.url || '',
+    connector: candidate.connector || {},
     state: 'queued',
     attempts: 0,
     maxAttempts: settings.router.maxAttempts,
@@ -297,6 +320,54 @@ export function createTicket(candidate, settings, now = Date.now()) {
     createdAt: nowIso(now),
     updatedAt: nowIso(now),
   };
+}
+
+function nextExternalTicketNumber(state) {
+  const highest = Object.values(state.tickets || {}).reduce(
+    (max, ticket) => Math.max(max, Number(ticket.number) || 0),
+    99_999,
+  );
+  return highest + 1;
+}
+
+function externalTaskTicket({ state, settings, payload, now }) {
+  const source = payload.source && typeof payload.source === 'object'
+    ? payload.source
+    : { id: 'connector', kind: 'connector', name: 'Connector' };
+  const externalId = String(payload.externalId || '').trim();
+  const externalKey = String(payload.externalKey || externalId || '').trim();
+  if (!externalId) throw new Error('task event requires payload.externalId');
+  const existing = Object.values(state.tickets).find(
+    (ticket) =>
+      ticket.source?.kind === source.kind
+      && String(ticket.externalId || '') === externalId,
+  );
+  if (existing) return { ticket: existing, duplicate: true };
+  const number = nextExternalTicketNumber(state);
+  const ticket = createTicket({
+    number,
+    title: String(payload.title || externalKey || `External task ${externalId}`),
+    body: String(payload.body || ''),
+    url: String(payload.url || ''),
+    labels: Array.isArray(payload.labels) ? payload.labels : [],
+    source,
+    externalId,
+    externalKey,
+    sourceUrl: String(payload.url || ''),
+    connector: payload.connector && typeof payload.connector === 'object'
+      ? payload.connector
+      : {},
+  }, settings, now);
+  ticket.inScope = Array.isArray(payload.scope) ? payload.scope.map(String) : [];
+  ticket.acceptance = Array.isArray(payload.acceptance)
+    ? payload.acceptance.map(String).filter(Boolean)
+    : [];
+  ticket.risk = String(payload.risk || '');
+  if (payload.priority) ticket.priority = String(payload.priority);
+  state.tickets[String(ticket.number)] = ticket;
+  state.nextTicketNumber = number + 1;
+  saveTicket(settings, ticket);
+  return { ticket, duplicate: false };
 }
 
 export function extractAcceptance(body = '') {
@@ -1059,9 +1130,17 @@ function resultEnvelopeForEvent({ repoRoot, ticket, event }) {
   return null;
 }
 
-function applyInboxEvent({ repoRoot, settings, state, event }) {
+function applyInboxEvent({ repoRoot, settings, state, event, now = Date.now() }) {
   const ticket = ticketForEvent(state, event);
   const payload = event.payload || {};
+
+  if (event.type === 'task') {
+    const created = externalTaskTicket({ state, settings, payload, now });
+    return {
+      outcome: created.duplicate ? 'duplicate-task' : 'created',
+      ticket: created.ticket,
+    };
+  }
 
   if (event.type === 'issue') {
     if (!ticket) return { outcome: 'no-ticket' };
@@ -1154,7 +1233,7 @@ export function drainInbox({ repoRoot, settings, state, now = Date.now() } = {})
   const results = [];
   for (const event of pending) {
     try {
-      const result = applyInboxEvent({ repoRoot, settings, state, event });
+      const result = applyInboxEvent({ repoRoot, settings, state, event, now });
       event.handledAt = nowIso(now);
       event.outcome = result.outcome || 'ok';
       results.push({ id: event.id, type: event.type, ...result, ticket: result.ticket?.number ?? null });
@@ -1427,6 +1506,8 @@ async function main() {
     dispatchMode: values['dispatch-mode'],
     inboxLimit: values['inbox-limit'],
     language: values.language,
+    storageBackend: values.storage,
+    sqlitePath: values.sqlite,
   });
   const ticketNumber = values.ticket ? Number(values.ticket) : null;
   const notify = async (ticket) => {
@@ -1459,7 +1540,7 @@ async function main() {
 
   if (sub === 'post') {
     if (!values.type) {
-      throw new Error('router post requires --type <issue|pull_request|result|worker|verify|recover|clean|schedule|control>');
+      throw new Error('router post requires --type <issue|pull_request|result|worker|verify|recover|clean|schedule|control|task>');
     }
     let payload = {};
     if (values.file) payload = readJson(resolve(repoRoot, values.file), {});

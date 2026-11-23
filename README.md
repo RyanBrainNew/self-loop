@@ -63,11 +63,31 @@ npm run serve
 跨站读写和 SSE 都会被拒绝。不要在没有认证反向代理的情况下暴露到公网。
 
 连接器配置、事件注入、Ticket 生命周期、真实 Verifier 证据和 Outbox 投递都是
-真实的；GitHub webhook 原始报文验签和 delivery 去重已经接入。项目模式可通过
-`executor.adapter` 接入 Codex、Claude 或自定义命令 adapter；Outbox 支持
-GitHub Issue/PR 评论、Jira 评论和 Slack channel/thread，带 429 退避、死信和
-人工重投。demo 模式仍使用模拟 Worker 与 Verifier，方便第一次打开控制台。
-详见 `server/README.md`、`references/CONFIG.md` 和 ADR 0010–0012。
+真实的；GitHub / Slack webhook 原始报文验签、delivery 去重、Slack `/loop`
+和 thread 回写已经接入。Jira 按 `updated` 做增量轮询，cursor 持久化在
+`.loop/connectors/jira.json`，429 或认证失败只标记 degraded，不丢 cursor。
+项目模式可通过 `executor.adapter` 接入 Codex、Claude 或自定义命令 adapter；
+Outbox 支持 GitHub Issue/PR 评论、Jira 评论和 Slack channel/thread，带 429
+退避、死信和人工重投。demo 模式仍使用模拟 Worker 与 Verifier，方便第一次打开
+控制台。
+
+单机需要多进程并发写时，可把 `storage.backend` 切到 `sqlite`；事件 id 和
+Outbox 幂等键由数据库唯一约束保护，JSON 继续作为可读镜像：
+
+```bash
+npm run migrate:sqlite -- --repo /path/to/project --dry-run
+npm run migrate:sqlite -- --repo /path/to/project
+```
+
+真实 Codex/Claude 端到端验收入口：
+
+```bash
+npm run test:e2e:codex
+```
+
+该命令会创建临时仓库、运行真实 executor、检查 Result Envelope 与独立
+Verifier；需要先登录对应 CLI。详见 `server/README.md`、
+`references/CONFIG.md`、`references/ROUTER.md` 和 ADR 0010–0015。
 
 ## 官网
 

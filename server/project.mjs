@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { resolveRepo, resolveSettings } from '../scripts/lib.mjs';
 import { resolveExecutorAdapter } from '../scripts/executors.mjs';
 import { loadOutbox, outboxSummary } from '../scripts/outbox.mjs';
+import { loadJiraCursor, syncJira } from './connectors/jira.mjs';
 
 const execFileAsync = promisify(execFile);
 const skillRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -32,6 +33,7 @@ export const PROJECT_CAPABILITIES = Object.freeze({
   projectWrite: true,
   projectAdd: true,
   projectRemove: true,
+  connectorSync: true,
   authRotate: true,
 });
 
@@ -124,23 +126,33 @@ function mapEvent(event, source) {
   const payload = event.payload || {};
   const issue = payload.issue || payload.pull_request || {};
   const title = issue.title
+    || payload.title
     || (event.type === 'issue' ? `GitHub issue #${event.ticket ?? ''}` : `${event.type} event`);
   return {
     id: String(event.id),
     sourceId: source.id,
     sourceName: source.name,
     sourceKind: source.kind,
-    kind: event.type === 'issue' ? `issue.${event.action || 'event'}` : `github.${event.type}`,
+    kind: event.type === 'task'
+      ? (payload.kind || 'task.created')
+      : event.type === 'issue'
+        ? `issue.${event.action || 'event'}`
+        : `github.${event.type}`,
     title,
-    body: issue.body || event.error || '',
-    actor: payload.sender?.login || payload.actor || 'github',
-    externalId: event.ticket ? `GH-${event.ticket}` : String(event.id),
+    body: issue.body || payload.body || event.error || '',
+    actor: payload.actor || payload.sender?.login || source.kind,
+    externalId: event.ticket
+      ? `GH-${event.ticket}`
+      : payload.externalId || String(event.id),
     dedupeKey: String(event.id),
-    priority: labelPriority(issue.labels?.map((label) => label?.name || label) || []),
-    labels: (issue.labels || []).map((label) => label?.name || label).filter(Boolean),
-    acceptance: [],
-    scope: [],
-    risk: 'medium',
+    priority: payload.priority
+      || labelPriority(issue.labels?.map((label) => label?.name || label) || []),
+    labels: (issue.labels || payload.labels || [])
+      .map((label) => label?.name || label)
+      .filter(Boolean),
+    acceptance: payload.acceptance || [],
+    scope: payload.scope || [],
+    risk: payload.risk || 'medium',
     status: event.handledAt ? (event.outcome === 'error' ? 'ignored' : 'consumed') : 'pending',
     receivedAt: event.createdAt,
     consumedAt: event.handledAt || null,
@@ -581,6 +593,7 @@ export class ProjectBackend {
     this.now = now;
     this.startedAt = new Date(now()).toISOString();
     this.signatures = new Map();
+    this.connectorHealth = new Map();
   }
 
   get mode() {
@@ -681,7 +694,7 @@ export class ProjectBackend {
 
   snapshot() {
     const { entry, state, inbox, outbox, error } = this.read();
-    const source = {
+    const githubSource = {
       id: 'src_github',
       name: 'GitHub Issues',
       kind: 'github',
@@ -694,10 +707,91 @@ export class ProjectBackend {
         : '未解析到 GitHub 仓库',
       config: { repo: entry.githubRepo || null },
     };
+    const sources = [githubSource];
+    const jiraConfig = entry.settings.connectors?.jira || {};
+    if (jiraConfig.enabled) {
+      const cursor = (() => {
+        try {
+          return loadJiraCursor(entry.outDir);
+        } catch {
+          return null;
+        }
+      })();
+      const runtime = this.connectorHealth.get(`${entry.id}:jira`);
+      sources.push({
+        id: 'src_jira',
+        name: `Jira${jiraConfig.project ? ` · ${jiraConfig.project}` : ''}`,
+        kind: 'jira',
+        status: runtime?.status === 'degraded' || runtime?.status === 'auth_error'
+          ? 'degraded'
+          : jiraConfig.baseUrl && this.registry.env[jiraConfig.tokenEnv] ? 'healthy' : 'degraded',
+        createdAt: state.updatedAt || this.startedAt,
+        lastEventAt: inbox.events
+          .filter((event) => event.payload?.source?.kind === 'jira')
+          .at(-1)?.createdAt || null,
+        eventCount: inbox.events
+          .filter((event) => event.payload?.source?.kind === 'jira').length,
+        health: runtime?.error
+          ? `${runtime.status} · ${runtime.error}`
+          : jiraConfig.baseUrl && this.registry.env[jiraConfig.tokenEnv]
+            ? `增量同步 · ${cursor?.lastSyncAt || '尚未同步'}`
+            : !jiraConfig.baseUrl
+              ? '缺少 connectors.jira.baseUrl'
+              : `缺少 ${jiraConfig.tokenEnv || 'JIRA_API_TOKEN'}`,
+        config: {
+          baseUrl: jiraConfig.baseUrl,
+          project: jiraConfig.project,
+          jql: jiraConfig.jql,
+          pollMinutes: jiraConfig.pollMinutes,
+          fieldMap: jiraConfig.fieldMap,
+          cursor: cursor?.updatedAt || null,
+          lastSyncAt: cursor?.lastSyncAt || null,
+        },
+      });
+    }
+    const slackConfig = entry.settings.connectors?.slack || {};
+    if (slackConfig.enabled) {
+      const runtime = this.connectorHealth.get(`${entry.id}:slack`);
+      sources.push({
+        id: 'src_slack',
+        name: 'Slack',
+        kind: 'slack',
+        status: runtime?.status === 'degraded'
+          ? 'degraded'
+          : process.env[slackConfig.signingSecretEnv] ? 'healthy' : 'degraded',
+        createdAt: state.updatedAt || this.startedAt,
+        lastEventAt: inbox.events
+          .filter((event) => event.payload?.source?.kind === 'slack')
+          .at(-1)?.createdAt || null,
+        eventCount: inbox.events
+          .filter((event) => event.payload?.source?.kind === 'slack').length,
+        health: runtime?.error
+          ? `${runtime.status} · ${runtime.error}`
+          : process.env[slackConfig.signingSecretEnv]
+            ? 'Events API · /loop · thread replies'
+            : `缺少 ${slackConfig.signingSecretEnv || 'SLACK_SIGNING_SECRET'}`,
+        config: {
+          signingSecretEnv: slackConfig.signingSecretEnv,
+          allowedChannels: slackConfig.allowedChannels,
+          respondToMessages: slackConfig.respondToMessages,
+          webhookPath: '/hooks/slack',
+          signingSecret: process.env[slackConfig.signingSecretEnv] ? 'configured' : '',
+        },
+      });
+    }
     const tickets = Object.values(state.tickets)
       .filter((ticket) => ticket && Number.isInteger(Number(ticket.number)))
-      .map((ticket) => mapTicket(ticket, entry, source));
-    const events = inbox.events.map((event) => mapEvent(event, source));
+      .map((ticket) => {
+        const source = sources.find((candidate) => candidate.kind === ticket.source?.kind)
+          || githubSource;
+        return mapTicket(ticket, entry, source);
+      });
+    const events = inbox.events.map((event) => {
+      const source = sources.find(
+        (candidate) => candidate.kind === event.payload?.source?.kind,
+      ) || githubSource;
+      return mapEvent(event, source);
+    });
     for (const ticket of tickets) {
       const event = [...events]
         .reverse()
@@ -748,12 +842,25 @@ export class ProjectBackend {
       workMs: 0,
       verifyMs: 0,
       language: entry.language,
+      connectors: {
+        jira: {
+          enabled: Boolean(jiraConfig.enabled),
+          project: jiraConfig.project || '',
+          pollMinutes: jiraConfig.pollMinutes || 0,
+        },
+        slack: {
+          enabled: Boolean(slackConfig.enabled),
+          signingSecretEnv: slackConfig.signingSecretEnv || 'SLACK_SIGNING_SECRET',
+          allowedChannels: slackConfig.allowedChannels || [],
+          respondToMessages: Boolean(slackConfig.respondToMessages),
+        },
+      },
     };
     const snapshot = {
       version: 1,
       meta,
       config,
-      sources: [source],
+      sources,
       events,
       tickets,
       attempts,
@@ -852,7 +959,10 @@ export class ProjectBackend {
   }
 
   async runRouter(args, { timeout = 180_000 } = {}) {
-    const entry = this.registry.current();
+    return this.runRouterFor(this.registry.current(), args, { timeout });
+  }
+
+  async runRouterFor(entry, args, { timeout = 180_000 } = {}) {
     try {
       const result = await execFileAsync(
         process.execPath,
@@ -889,6 +999,96 @@ export class ProjectBackend {
       detail: result.status === 3 ? '没有可领取的 Issue' : 'Router tick 完成',
       output: result.stdout.slice(-4000),
     };
+  }
+
+  async ingestConnectorEvent(input, source, entry = this.registry.current()) {
+    const payload = {
+      ...input,
+      source: {
+        id: source.id,
+        kind: source.kind,
+        name: source.name,
+      },
+    };
+    const result = await this.runRouterFor(entry, [
+      'post',
+      '--type',
+      'task',
+      '--action',
+      'created',
+      '--id',
+      String(input.dedupeKey || input.externalId),
+      '--data',
+      JSON.stringify(payload),
+    ]);
+    let posted = {};
+    try {
+      posted = JSON.parse(result.stdout);
+    } catch {}
+    return {
+      duplicate: Boolean(posted.duplicate),
+      event: {
+        id: posted.id || input.dedupeKey || input.externalId,
+        kind: input.kind || 'task.created',
+      },
+    };
+  }
+
+  setConnectorHealth(kind, value, entry = this.registry.current()) {
+    if (value) this.connectorHealth.set(`${entry.id}:${kind}`, {
+      ...value,
+      at: new Date(this.now()).toISOString(),
+    });
+    else this.connectorHealth.delete(`${entry.id}:${kind}`);
+  }
+
+  async syncJira(entry = this.registry.current(), options = {}) {
+    const config = entry.settings.connectors?.jira;
+    if (!config?.enabled) {
+      const error = new Error('Jira connector is not enabled');
+      error.statusCode = 409;
+      throw error;
+    }
+    try {
+      const result = await syncJira({
+        outDir: entry.outDir,
+        config,
+        env: this.registry.env,
+        ...options,
+        applyEvent: async (event) => {
+          const payload = {
+            ...event,
+            source: {
+              id: 'src_jira',
+              kind: 'jira',
+              name: `Jira${config.project ? ` · ${config.project}` : ''}`,
+            },
+          };
+          await this.runRouterFor(entry, [
+            'post',
+            '--type',
+            'task',
+            '--action',
+            'created',
+            '--id',
+            String(event.dedupeKey || event.externalId),
+            '--data',
+            JSON.stringify(payload),
+          ]);
+        },
+      });
+      this.setConnectorHealth('jira', {
+        status: result.status,
+        error: result.error || null,
+      }, entry);
+      return result;
+    } catch (error) {
+      this.setConnectorHealth('jira', {
+        status: 'error',
+        error: error.message,
+      }, entry);
+      throw error;
+    }
   }
 
   async flushOutbox() {

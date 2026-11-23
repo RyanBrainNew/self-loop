@@ -287,7 +287,7 @@
             <div>
               <code>connectors</code>
               <h3>把外部世界接进来</h3>
-              <p>GitHub、Jira、Slack、Webhook、Cron 统一归一化为 Router 能消费的事件。</p>
+              <p>GitHub / Slack 验签入站，Jira 增量 cursor，统一归一化为 Router 能消费的 task 事件。</p>
             </div>
             <span class="product-state">ingress</span>
           </article>
@@ -314,7 +314,7 @@
             <div>
               <code>outbox</code>
               <h3>结果必须送得出去</h3>
-              <p>GitHub、Jira、Slack 写回都有幂等键、429 退避、死信和人工重投。</p>
+              <p>GitHub、Jira、Slack 写回都有幂等键、429 退避、死信和人工重投；Slack 回到原 thread。</p>
             </div>
             <span class="product-state">deliver</span>
           </article>
@@ -322,6 +322,7 @@
           <div class="product-console">
             <span>console</span>
             <p>Projects · Overview · Inbox · Tickets · Outbox · Sources · Workers · Policy</p>
+            <p>可选 SQLite 并发存储 · JSON 可读镜像 · 多仓库统一切换</p>
           </div>
         </div>
       </section>

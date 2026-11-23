@@ -228,6 +228,36 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
     && !Array.isArray(outboxAdapters.slack)
     ? outboxAdapters.slack
     : {};
+  const connectorsConfig = config.connectors
+    && typeof config.connectors === 'object'
+    && !Array.isArray(config.connectors)
+    ? config.connectors
+    : {};
+  const jiraConnector = connectorsConfig.jira
+    && typeof connectorsConfig.jira === 'object'
+    && !Array.isArray(connectorsConfig.jira)
+    ? connectorsConfig.jira
+    : {};
+  const githubConnector = connectorsConfig.github
+    && typeof connectorsConfig.github === 'object'
+    && !Array.isArray(connectorsConfig.github)
+    ? connectorsConfig.github
+    : {};
+  const slackConnector = connectorsConfig.slack
+    && typeof connectorsConfig.slack === 'object'
+    && !Array.isArray(connectorsConfig.slack)
+    ? connectorsConfig.slack
+    : {};
+  const jiraFieldMap = jiraConnector.fieldMap
+    && typeof jiraConnector.fieldMap === 'object'
+    && !Array.isArray(jiraConnector.fieldMap)
+    ? jiraConnector.fieldMap
+    : {};
+  const storageConfig = config.storage
+    && typeof config.storage === 'object'
+    && !Array.isArray(config.storage)
+    ? config.storage
+    : {};
 
   const outDir = pathInRepo(
     repoRoot,
@@ -534,6 +564,79 @@ export function resolveSettings(repoRoot, overrides = {}, env = process.env) {
           apiBaseUrl: String(slackOutbox.apiBaseUrl ?? 'https://slack.com/api'),
         },
       },
+    },
+    connectors: {
+      github: {
+        webhookSecretEnv: String(
+          githubConnector.webhookSecretEnv ?? 'SELF_LOOP_GITHUB_WEBHOOK_SECRET',
+        ),
+      },
+      jira: {
+        enabled: booleanValue(
+          choose(jiraConnector.enabled, false),
+          'connectors.jira.enabled',
+        ),
+        baseUrl: String(jiraConnector.baseUrl ?? jiraConnector.site ?? ''),
+        project: String(jiraConnector.project ?? ''),
+        jql: String(jiraConnector.jql ?? ''),
+        email: String(jiraConnector.email ?? ''),
+        tokenEnv: String(jiraConnector.tokenEnv ?? 'JIRA_API_TOKEN'),
+        pollMinutes: positiveInteger(
+          choose(jiraConnector.pollMinutes, 5),
+          'connectors.jira.pollMinutes',
+        ),
+        initialLookbackMinutes: positiveInteger(
+          choose(jiraConnector.initialLookbackMinutes, 1440),
+          'connectors.jira.initialLookbackMinutes',
+        ),
+        pageSize: Math.min(
+          100,
+          positiveInteger(choose(jiraConnector.pageSize, 50), 'connectors.jira.pageSize'),
+        ),
+        fieldMap: {
+          title: String(jiraFieldMap.title ?? 'summary'),
+          body: String(jiraFieldMap.body ?? 'description'),
+          acceptance: String(jiraFieldMap.acceptance ?? ''),
+          priority: String(jiraFieldMap.priority ?? 'priority.name'),
+          labels: String(jiraFieldMap.labels ?? 'labels'),
+          status: String(jiraFieldMap.status ?? 'status.name'),
+        },
+      },
+      slack: {
+        enabled: booleanValue(
+          choose(slackConnector.enabled, false),
+          'connectors.slack.enabled',
+        ),
+        signingSecretEnv: String(slackConnector.signingSecretEnv ?? 'SLACK_SIGNING_SECRET'),
+        botTokenEnv: String(slackConnector.botTokenEnv ?? 'SLACK_BOT_TOKEN'),
+        allowedChannels: stringArray(slackConnector.allowedChannels),
+        respondToMessages: booleanValue(
+          choose(slackConnector.respondToMessages, false),
+          'connectors.slack.respondToMessages',
+        ),
+      },
+    },
+    storage: {
+      backend: enumValue(
+        choose(
+          overrides.storageBackend,
+          firstEnv(env, ['SELF_LOOP_STORAGE_BACKEND']),
+          storageConfig.backend,
+          'json',
+        ),
+        ['json', 'sqlite'],
+        'storage.backend',
+      ),
+      sqlitePath: pathInRepo(
+        repoRoot,
+        choose(
+          overrides.sqlitePath,
+          firstEnv(env, ['SELF_LOOP_SQLITE_PATH']),
+          storageConfig.sqlitePath,
+          join(outDir, 'self-loop.db').split(sep).join('/'),
+        ),
+        'storage.sqlitePath',
+      ),
     },
   };
 }

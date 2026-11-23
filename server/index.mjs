@@ -113,6 +113,7 @@ if (options.rotateToken) {
 
 let backend;
 let timer;
+let connectorTimer;
 let dataFile = null;
 let projectStore = null;
 
@@ -148,6 +149,39 @@ if (registeredProjects.length) {
       console.error('[watch]', error.message);
     }
   }, 250);
+
+  const jiraDue = new Map();
+  let jiraRunning = false;
+  connectorTimer = setInterval(async () => {
+    if (jiraRunning) return;
+    jiraRunning = true;
+    try {
+      for (const entry of registry.entries) {
+        const config = entry.settings.connectors?.jira;
+        if (!config?.enabled) continue;
+        const dueAt = jiraDue.get(entry.id) || 0;
+        if (Date.now() < dueAt) continue;
+        jiraDue.set(entry.id, Date.now() + Math.max(1, config.pollMinutes) * 60_000);
+        try {
+          const result = await backend.syncJira(entry);
+          if (result.events?.length) api.broadcast();
+          if (result.nextSyncAt) {
+            const retryAt = Date.parse(result.nextSyncAt);
+            if (Number.isFinite(retryAt)) {
+              jiraDue.set(entry.id, Math.max(jiraDue.get(entry.id) || 0, retryAt));
+            }
+          }
+          if (['degraded', 'auth_error', 'network_error'].includes(result.status)) {
+            console.error(`[jira] ${entry.name}: ${result.error || result.status}`);
+          }
+        } catch (error) {
+          console.error(`[jira] ${entry.name}: ${error.message}`);
+        }
+      }
+    } finally {
+      jiraRunning = false;
+    }
+  }, 15_000);
 } else {
   if (options.repos.length) throw new Error('no project was registered');
   dataFile = resolve(process.cwd(), options.data);
@@ -222,6 +256,7 @@ server.listen(options.port, options.host, () => {
 
 function shutdown() {
   clearInterval(timer);
+  clearInterval(connectorTimer);
   try {
     if (backend.mode === 'demo') backend.store.save();
   } catch (error) {
