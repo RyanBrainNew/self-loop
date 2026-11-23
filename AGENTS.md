@@ -15,14 +15,16 @@ the `package.json` license field in sync.
   `sqlite-store`, `migrate-store`, `e2e-executor`, tests).
 - `references/` - workflow, memory, and policy documentation.
 - `templates/memory/` - generic project memory templates.
-- `adapters/orca/` - optional Orca setup, prompts, and precheck.
+- `adapters/orca/` - optional Orca setup, prompts, precheck, and live E2E probe.
 - `deploy/` - systemd units and Prometheus alert rules for self-hosting.
 - `server/` - local-first Router console: HTTP API, demo seed, project-state
   adapter, persistent multi-repo registry (`project-store.mjs`), local write
   auth, Slack/Jira connector adapters, observability, and the dependency-free
-  bilingual web UI.
+  bilingual web UI. `hosted-rbac.mjs` is the tested hosted authorization
+  contract; `migrations/` contains the PostgreSQL/RLS schema.
 - `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
+- `tests/console/` - Playwright browser E2E and axe accessibility checks.
 
 ## Invariants
 
@@ -55,6 +57,9 @@ the `package.json` license field in sync.
 - `storage.backend` is `json` by default. The optional `sqlite` backend uses
   `node:sqlite`, keeps JSON as a mirror, and enforces unique event ids and
   Outbox idempotency keys. Hosted PostgreSQL remains ADR 0013.
+- Hosted authorization is default-deny. `server/hosted-rbac.mjs` is the tested
+  role contract; hosted queries must include `tenant_id` and set the RLS
+  transaction variable. The local write token is never a hosted identity.
 - Scheduled automations only append `task` Inbox events on a due tick. They do
   not bypass Task Card, acceptance, lease, Verifier, or human gates.
 - Remote worker tokens are returned once and stored only as SHA-256 hashes in
@@ -96,6 +101,8 @@ npm run serve
 npm run serve:project -- /path/to/project
 npm run migrate:sqlite -- --repo /path/to/project --dry-run
 npm run test:e2e:codex
+npm run test:e2e:console
+npm run test:e2e:orca
 npm run test:github:live -- --repo owner/name
 node scripts/setup-project.mjs --repo /path/to/project --dry-run
 node scripts/init-memory.mjs --repo /path/to/project --dry-run
@@ -117,5 +124,7 @@ curl http://127.0.0.1:4317/metrics
   or workflow behavior.
 - Keep `node:sqlite` optional so Node 20 and dependency-free JSON mode keep
   working. Do not make a real agent login a CI prerequisite.
+- Browser E2E uses Playwright + axe as dev-only dependencies and must keep the
+  core runtime dependency-free. Real Claude/Orca checks stay opt-in.
 - Use `rg` for string/config searches; use MCP graph tools when available for
   code discovery.

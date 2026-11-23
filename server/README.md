@@ -298,6 +298,27 @@ short label; the Glossary page (`#/glossary`) gives a plain-language
 explanation for every term. The shell includes a skip link, `main` landmark,
 `aria-current` navigation, and labelled controls.
 
+Browser E2E is a dev-only dependency:
+
+```bash
+npm ci
+npx playwright install chromium
+npm run test:e2e:console
+```
+
+It starts a two-project fixture, walks every primary route, runs axe WCAG 2
+A/AA checks, and verifies theme persistence, project switching, audit filters,
+and the glossary. See `tests/console/`.
+
+## Hosted control-plane contract
+
+The local console is still local-first. `server/hosted-rbac.mjs` defines the
+default-deny tenant/project role matrix for the future hosted service, and
+`migrations/001_hosted.sql` defines PostgreSQL tables, idempotency constraints,
+optimistic versions, indexes, and tenant-isolation RLS policies. See
+[`docs/HOSTED-PHASE-1.md`](../docs/HOSTED-PHASE-1.md) for what is implemented
+versus still deferred.
+
 ## What is real
 
 - Demo Router: events, Tickets, Attempts, deliveries, workers, and audit state.

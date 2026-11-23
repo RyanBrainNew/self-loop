@@ -1,0 +1,37 @@
+name: Live executor E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      adapter:
+        description: Executor adapter
+        required: true
+        default: codex
+        type: choice
+        options:
+          - codex
+          - claude
+
+permissions:
+  contents: read
+
+jobs:
+  live-executor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Claude Code
+        if: inputs.adapter == 'claude'
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Install Codex CLI
+        if: inputs.adapter == 'codex'
+        run: npm install -g @openai/codex
+      - name: Run real executor E2E
+        run: npm run test:e2e:codex -- --adapter "${{ inputs.adapter }}" --timeout 20 --log
