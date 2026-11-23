@@ -4,12 +4,48 @@
 
 核心是一个确定性的 Router 控制面：它拥有 Issue 选择、Ticket 状态、lease、Task Card、Context Packet、Attempt、验证门禁和人工交接。大模型只能在 triage、Task Card 草稿或语义 review 上给建议，不能授权、不能绕过门禁。
 
+官网：<https://ryanbrainnew.github.io/self-loop/>
+
 硬边界：
 
 - 永不合并 PR，永不直接 push 默认分支。
 - 不新增标签，只使用 `needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`。
 - 不绑定项目技术栈，不假设项目里有 `loop/` 目录。
 - Orca 只是 `adapters/orca/` 里的可选适配器。
+
+## 产品形态
+
+完整产品不是“把 skill 写长一点”，而是一个以 Router 为中心的 Web 控制面：
+
+1. **Connectors**：接入 GitHub、Jira、Slack、Webhook、Cron 等外部来源；
+2. **Task Listener**：同时承接定时自动化任务和外部事件；
+3. **Inbox / Blackboard**：展示所有采集到的事件、Ticket 和实时处理状态；
+4. **Outbox**：把完成结果回写到 GitHub、IM 或其他外部系统。
+
+控制台围绕这些能力提供 `Overview`、`Inbox`、`Tickets`、`Outbox`、`Sources`、
+`Workers` 和 `Policy` 页面，并允许人工回答、重跑、取消、验收和重投。skill 仍然是
+Worker 侧的执行协议；Web 控制台是观察和干预 Router 的产品表面。
+
+产品结构、部署形态和真实/模拟能力边界见
+[`docs/PRODUCT.md`](docs/PRODUCT.md)。
+
+## Web 控制台（MVP）
+
+`server/` 提供一个本地优先的 Router 控制台。它把 Source → Inbox →
+Ticket → Attempt → Verifier → Outbox 的链路可视化，并允许人工回答、
+重跑、取消、验收和重投。
+
+```bash
+npm run serve
+# http://127.0.0.1:4317
+```
+
+首次启动会写入演示数据；状态保存在 `.self-loop/state.json`，该目录已被
+gitignore。MVP 只绑定本机、没有鉴权，不要暴露到公网。
+
+连接器配置、事件注入、Ticket 生命周期和 Outbox 重试是真实的；Worker
+执行与 Verifier 证据目前是定时模拟，真实 OAuth、webhook 验签和外部 API
+调用在下一版接入。详见 `server/README.md`。
 
 ## 官网
 
@@ -310,12 +346,14 @@ CI 在 push 和 PR 上运行 `node --test`。测试覆盖策略/标签/选择、
 
 Router 额外覆盖：Task Card 缺验收时阻塞、lease 过期重试/耗尽阻塞、已有分支工作时阻塞、Verifier 的 pass/fail/人工复核转换、worktree 清理、state lock 冲突与 stale lock、inbox 幂等与结果事件、`maxConcurrent` 并发上限、`router status` 的 `--repo` 冒烟，以及只复制 skill 根目录后的独立运行。
 
-当前测试基线：`58` 个测试全部通过（Node 20+）。
+服务端控制台另外覆盖事件去重、Ticket/Attempt 生命周期、人工回答、Outbox
+重试、连接器与 Worker 开关，以及 HTTP API。当前测试基线：`66` 个测试全部
+通过（Node 20+）。
 
 ## 设计文档
 
 - `docs/DESIGN.md`：Router 控制面、角色、生命周期、Context Packet / Result Envelope、验证和 rollout。
-- `docs/adr/`：已接受的架构决策（scheduler-agnostic core、installable layout、Router control plane、independent verification、context protocol）。
+- `docs/adr/`：已接受的架构决策（scheduler-agnostic core、installable layout、Router control plane、independent verification、context protocol、inbox bounded concurrency、local web console）。
 - `GLOSSARY.md`：统一术语，避免把 skill root、target repository、Ticket、Claim、Lease 混用。
 
 ## License

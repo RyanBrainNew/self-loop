@@ -2,9 +2,10 @@
 
 ## Repository purpose
 
-This repository is the installable `self-loop` skill. `SKILL.md` is the routing
-document; detailed workflows live in `references/`. The project is open source
-under Apache-2.0; keep `LICENSE` and the `package.json` license field in sync.
+This repository is the installable `self-loop` skill plus an optional local web
+console. `SKILL.md` is the routing document; detailed workflows live in
+`references/`. The project is open source under Apache-2.0; keep `LICENSE` and
+the `package.json` license field in sync.
 
 ## Layout
 
@@ -14,12 +15,17 @@ under Apache-2.0; keep `LICENSE` and the `package.json` license field in sync.
 - `references/` - workflow, memory, and policy documentation.
 - `templates/memory/` - generic project memory templates.
 - `adapters/orca/` - optional Orca setup, prompts, and precheck.
+- `server/` - local-first Router console: HTTP API, JSON state, demo seed, and
+  the dependency-free web UI.
 - `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
 
 ## Invariants
 
 - Core scripts must not mention or require Orca.
+- Core scripts must not import `server/`; the console is an optional caller.
+- The console binds to localhost by default and must not be exposed publicly
+  without authentication.
 - Core scripts must not assume the current directory or a project-local `loop/`
   directory. Accept `--repo`, then `SELF_LOOP_REPO`, then legacy `LOOP_REPO`.
 - All git operations, output, and memory paths stay inside the target repo.
@@ -44,6 +50,8 @@ under Apache-2.0; keep `LICENSE` and the `package.json` license field in sync.
 ```bash
 npm test
 node --test scripts/self-loop.test.mjs
+node --test server/server.test.mjs
+npm run serve
 node scripts/setup-project.mjs --repo /path/to/project --dry-run
 node scripts/init-memory.mjs --repo /path/to/project --dry-run
 node scripts/run.mjs router status --repo /path/to/project --json
