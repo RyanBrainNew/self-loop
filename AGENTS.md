@@ -21,8 +21,10 @@ the `package.json` license field in sync.
   adapter, persistent multi-repo registry (`project-store.mjs`), local write
   auth, Slack/Jira connector adapters, observability, and the dependency-free
   bilingual web UI. `hosted-rbac.mjs`, `hosted-oidc.mjs`, `hosted-auth.mjs`,
-  `hosted-http.mjs`, `hosted-pg.mjs`, and `hosted-index.mjs` are the separate
-  hosted OIDC/RBAC/PostgreSQL surface; `migrations/` contains the RLS schema.
+  `hosted-http.mjs`, `hosted-pg.mjs`, `hosted-secrets.mjs`,
+  `hosted-ingress.mjs`, and `hosted-index.mjs` are the separate hosted
+  OIDC/RBAC/PostgreSQL/connector surface; `migrations/` contains the RLS schema
+  and connector migrations.
 - `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
 - `tests/console/` - Playwright browser E2E and axe accessibility checks.
@@ -65,7 +67,15 @@ the `package.json` license field in sync.
   Hosted login uses one-time state/nonce transactions and HttpOnly sessions;
   project and ticket routes resolve membership before reading the database.
   Hosted Ticket claims use `FOR UPDATE SKIP LOCKED` and version predicates;
-  hosted HTTP is read-only in this phase and never writes Ticket state.
+  hosted HTTP never writes Ticket state.
+- Hosted webhook ingress runs before tenant context exists only through the
+  controlled `resolve_connector_binding(provider, external_id)` SQL function.
+  It must verify the raw-body signature, enforce a per-binding rate limit,
+  dedupe by provider delivery id, and insert only normalized Inbox events.
+- Connector credentials are encrypted at rest with tenant/project/provider/
+  credential AAD. Read APIs return metadata only; plaintext is decrypted only
+  for signature verification or an Outbox adapter call. The current
+  `HOSTED_SECRET_KEY` is a single local key, not KMS/Secret Manager.
 - Scheduled automations only append `task` Inbox events on a due tick. They do
   not bypass Task Card, acceptance, lease, Verifier, or human gates.
 - Remote worker tokens are returned once and stored only as SHA-256 hashes in

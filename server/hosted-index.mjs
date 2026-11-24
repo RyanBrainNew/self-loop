@@ -10,6 +10,12 @@ import {
   createPgLoginTransactionStore,
   createPgSessionStore,
 } from './hosted-pg.mjs';
+import {
+  PgConnectorSecretStore,
+  SecretBox,
+  parseSecretKey,
+} from './hosted-secrets.mjs';
+import { HostedIngressService, PgIngressStore } from './hosted-ingress.mjs';
 import { discoverOidc, fetchJwks } from './hosted-oidc.mjs';
 
 function requiredEnv(env, name) {
@@ -85,6 +91,26 @@ export async function startHostedServer(env = process.env) {
   const userStore = new PgUserStore({ pool });
   const projectStore = new PgProjectStore({ pool });
   const ticketStore = new PgTicketStore({ pool });
+  const secretKey = String(env.HOSTED_SECRET_KEY || '').trim();
+  let secretStore = null;
+  let ingressStore = null;
+  let ingressService = null;
+  if (secretKey) {
+    const box = new SecretBox({
+      key: parseSecretKey(secretKey),
+      keyVersion: String(env.HOSTED_SECRET_KEY_VERSION || 'v1'),
+    });
+    secretStore = new PgConnectorSecretStore({ pool, box });
+    ingressStore = new PgIngressStore({ pool });
+    ingressService = new HostedIngressService({
+      store: ingressStore,
+      credentialStore: secretStore,
+      rateLimit: Number(env.HOSTED_INGRESS_RATE_LIMIT || 120) || 120,
+      rateWindowSeconds: Number(env.HOSTED_INGRESS_RATE_WINDOW_SECONDS || 60) || 60,
+    });
+  } else {
+    console.error('hosted connector secrets disabled: HOSTED_SECRET_KEY is not set');
+  }
   const authService = new HostedAuthService({
     discovery,
     clientId,
@@ -100,6 +126,9 @@ export async function startHostedServer(env = process.env) {
     authService,
     projectStore,
     ticketStore,
+    secretStore,
+    ingressStore,
+    ingressService,
     secureCookies: String(env.HOSTED_SECURE_COOKIES || '')
       ? env.HOSTED_SECURE_COOKIES === 'true'
       : !localRedirect,

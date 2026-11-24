@@ -7,6 +7,9 @@ async function fixture({
   identity: identityOverride,
   projectStore = null,
   ticketStore = null,
+  secretStore = null,
+  ingressStore = null,
+  ingressService = null,
 } = {}) {
   const calls = [];
   const identity = identityOverride || {
@@ -46,6 +49,9 @@ async function fixture({
     authService,
     projectStore,
     ticketStore,
+    secretStore,
+    ingressStore,
+    ingressService,
     secureCookies: false,
     allowedOrigins: ['https://console.example'],
   });
@@ -304,6 +310,265 @@ test('hosted routes do not leak database errors', async () => {
     assert.equal(response.status, 503);
     const body = await response.json();
     assert.deepEqual(body, { error: 'hosted service unavailable' });
+  } finally {
+    await context.close();
+  }
+});
+
+test('hosted connector credentials require source:manage and never return secrets', async () => {
+  const calls = [];
+  const identity = {
+    id: 'user-5',
+    memberships: [
+      {
+        tenantId: 'tenant-a',
+        tenantSlug: 'acme',
+        displayName: 'Acme',
+        role: 'viewer',
+        projects: [],
+      },
+      {
+        tenantId: 'tenant-b',
+        tenantSlug: 'beta',
+        displayName: 'Beta',
+        role: 'maintainer',
+        projects: [],
+      },
+    ],
+  };
+  const metadata = {
+    id: 'credential-1',
+    provider: 'github',
+    displayName: 'GitHub',
+    scope: {},
+    revokedAt: null,
+  };
+  const secretStore = {
+    async listCredentials(input) {
+      calls.push(['list', input]);
+      return [metadata];
+    },
+    async createCredential(input) {
+      calls.push(['create', input]);
+      return metadata;
+    },
+    async rotateCredential(input) {
+      calls.push(['rotate', input]);
+      return metadata;
+    },
+    async revokeCredential(input) {
+      calls.push(['revoke', input]);
+      return { ...metadata, revokedAt: '2026-11-24T00:00:00Z' };
+    },
+    async getCredentialRecord(input) {
+      calls.push(['record', input]);
+      return { id: input.credentialId, provider: 'github' };
+    },
+  };
+  const bindings = [];
+  const ingressStore = {
+    async listBindings() {
+      return bindings;
+    },
+    async createBinding(input) {
+      calls.push(['binding-create', input]);
+      const binding = {
+        id: 'binding-1',
+        provider: input.provider,
+        externalId: input.externalId,
+        credentialId: input.credentialId,
+      };
+      bindings.push(binding);
+      return binding;
+    },
+    async deleteBinding(input) {
+      calls.push(['binding-delete', input]);
+      return true;
+    },
+  };
+  const context = await fixture({
+    identity,
+    secretStore,
+    ingressStore,
+  });
+  const cookie = { Cookie: 'self_loop_hosted_session=session-1' };
+  try {
+    const denied = await fetch(
+      `${context.base}/api/tenants/tenant-a/projects/project-1/credentials`,
+      {
+        method: 'POST',
+        headers: { ...cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'github',
+          secret: { webhookSecret: 'super-secret' },
+        }),
+      },
+    );
+    assert.equal(denied.status, 403);
+
+    const created = await fetch(
+      `${context.base}/api/tenants/tenant-b/projects/project-1/credentials`,
+      {
+        method: 'POST',
+        headers: { ...cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'github',
+          displayName: 'GitHub',
+          secret: { webhookSecret: 'super-secret' },
+        }),
+      },
+    );
+    assert.equal(created.status, 201);
+    const createdBody = await created.text();
+    assert.equal(createdBody.includes('super-secret'), false);
+    assert.equal(calls.at(-1)[1].secret.webhookSecret, 'super-secret');
+
+    const listed = await fetch(
+      `${context.base}/api/tenants/tenant-b/projects/project-1/credentials`,
+      { headers: cookie },
+    );
+    assert.equal(listed.status, 200);
+    assert.equal((await listed.json()).credentials[0].id, 'credential-1');
+
+    const rotated = await fetch(
+      `${context.base}/api/tenants/tenant-b/projects/project-1/credentials/credential-1/rotate`,
+      {
+        method: 'POST',
+        headers: { ...cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secret: { webhookSecret: 'rotated' } }),
+      },
+    );
+    assert.equal(rotated.status, 200);
+
+    const revoked = await fetch(
+      `${context.base}/api/tenants/tenant-b/projects/project-1/credentials/credential-1`,
+      { method: 'DELETE', headers: cookie },
+    );
+    assert.equal(revoked.status, 200);
+    assert.ok((await revoked.json()).credential.revokedAt);
+
+    const binding = await fetch(
+      `${context.base}/api/tenants/tenant-b/projects/project-1/bindings`,
+      {
+        method: 'POST',
+        headers: { ...cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'github',
+          externalId: 'acme/repo',
+          credentialId: 'credential-1',
+        }),
+      },
+    );
+    assert.equal(binding.status, 201);
+    assert.equal((await binding.json()).binding.externalId, 'acme/repo');
+
+    const deleted = await fetch(
+      `${context.base}/api/tenants/tenant-b/projects/project-1/bindings/binding-1`,
+      { method: 'DELETE', headers: cookie },
+    );
+    assert.equal(deleted.status, 204);
+
+    const crossSite = await fetch(
+      `${context.base}/api/tenants/tenant-b/projects/project-1/credentials`,
+      {
+        method: 'POST',
+        headers: {
+          ...cookie,
+          Origin: 'https://evil.example',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          provider: 'github',
+          secret: { webhookSecret: 'x' },
+        }),
+      },
+    );
+    assert.equal(crossSite.status, 403);
+  } finally {
+    await context.close();
+  }
+});
+
+test('hosted webhook routes do not require a console session', async () => {
+  const calls = [];
+  const ingressService = {
+    async ingestGitHub(input) {
+      calls.push(['github', input.headers['x-github-delivery']]);
+      return {
+        duplicate: false,
+        dedupeKey: 'binding-1:github:delivery-1',
+        id: 'event-1',
+        kind: 'issue.opened',
+        status: 'pending',
+        ignoredReason: null,
+      };
+    },
+    async ingestSlack(input) {
+      calls.push(['slack', input.contentType]);
+      if (input.rawBody.includes('url_verification')) {
+        return { challenge: 'challenge-1' };
+      }
+      return {
+        duplicate: false,
+        dedupeKey: 'binding-slack:slack:trigger-1',
+        id: 'event-2',
+        kind: 'task.created',
+        status: 'pending',
+        acknowledgement: '已收到 Fix login',
+      };
+    },
+  };
+  const context = await fixture({ ingressService });
+  try {
+    const github = await fetch(`${context.base}/hooks/github`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GitHub-Delivery': 'delivery-1',
+      },
+      body: '{"repository":{"full_name":"acme/repo"}}',
+    });
+    assert.equal(github.status, 202);
+    assert.equal((await github.json()).event.kind, 'issue.opened');
+
+    const slackChallenge = await fetch(`${context.base}/hooks/slack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"type":"url_verification","team_id":"T1"}',
+    });
+    assert.equal(slackChallenge.status, 200);
+    assert.equal((await slackChallenge.json()).challenge, 'challenge-1');
+
+    const slackCommand = await fetch(`${context.base}/hooks/slack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'command=%2Floop&team_id=T1&trigger_id=trigger-1',
+    });
+    assert.equal(slackCommand.status, 200);
+    const commandBody = await slackCommand.json();
+    assert.equal(commandBody.response_type, 'ephemeral');
+    assert.match(commandBody.text, /Fix login/);
+
+    const crossSite = await fetch(`${context.base}/hooks/github`, {
+      method: 'POST',
+      headers: { Origin: 'https://evil.example' },
+      body: '{}',
+    });
+    assert.equal(crossSite.status, 403);
+    assert.equal(calls.length, 3);
+  } finally {
+    await context.close();
+  }
+});
+
+test('hosted webhook routes report a missing ingress service', async () => {
+  const context = await fixture();
+  try {
+    const response = await fetch(`${context.base}/hooks/github`, {
+      method: 'POST',
+      body: '{}',
+    });
+    assert.equal(response.status, 503);
   } finally {
     await context.close();
   }

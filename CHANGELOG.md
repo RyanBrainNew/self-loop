@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.0
+
+- Added tenant-scoped hosted connector credentials with AES-256-GCM encryption,
+  tenant/project/provider/credential AAD, metadata-only read APIs, rotation,
+  and revocation.
+- Added GitHub and Slack hosted webhook ingress with raw-body signature
+  verification, repository/team binding resolution, fixed-window rate limits,
+  idempotent event insertion, and normalized Inbox events.
+- Added the controlled `resolve_connector_binding` PostgreSQL function so
+  unauthenticated ingress can route before tenant context exists without a
+  general cross-tenant query.
+- Added connector credential/binding APIs with `source:manage` authorization
+  and migration `002_hosted_connectors.sql`.
+- Added hosted connector, secret, ingress, and HTTP tests (18 hosted connector
+  tests, 37 hosted tests total).
+
 ## 0.7.0
 
 - Added the first runnable hosted control-plane surface: OIDC login with PKCE,
