@@ -17,13 +17,15 @@ export const DEMO_CAPABILITIES = Object.freeze({
   ticketApprove: true,
   tick: true,
   projectSelect: false,
+  projectAdd: false,
   authRotate: true,
 });
 
 export class DemoBackend {
-  constructor({ store, engine }) {
+  constructor({ store, engine, onAddProject = null }) {
     this.store = store;
     this.engine = engine;
+    this.onAddProject = onAddProject;
   }
 
   get mode() {
@@ -31,7 +33,9 @@ export class DemoBackend {
   }
 
   get capabilities() {
-    return DEMO_CAPABILITIES;
+    return this.onAddProject
+      ? { ...DEMO_CAPABILITIES, projectAdd: true }
+      : DEMO_CAPABILITIES;
   }
 
   projects() {
@@ -156,8 +160,9 @@ export class DemoBackend {
     };
   }
 
-  addProject() {
-    return this.unsupported('添加项目');
+  addProject(input = {}) {
+    if (!this.onAddProject) return this.unsupported('添加项目');
+    return this.onAddProject(input);
   }
 
   removeProject() {

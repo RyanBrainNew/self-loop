@@ -35,6 +35,7 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5h10"/>',
   logs: '<path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   projects:
     '<rect x="4" y="5" width="16" height="5" rx="1.5"/><path d="M6 10v8h12v-8M9 14h6"/>',
 };
@@ -161,6 +162,7 @@ const state = {
     status: 'all',
   },
   modal: null,
+  dirPicker: null,
   stream: null,
   lastRoute: null,
 };
@@ -1604,8 +1606,8 @@ function projectsView() {
             <div>
               <div class="mode-banner-title">还没有注册项目</div>
               <div class="mode-banner-sub">
-                当前是 demo 模式。运行 <code>npm run serve:project -- &lt;repo&gt;</code> 注册第一个项目；
-                注册后重启会直接进入统一 project 模式，并可在这里继续添加仓库。
+                当前是 demo 模式。点击右上角“添加项目”，通过目录选择器注册第一个 Git 仓库；
+                注册后会立即切换到 project 模式，并可继续添加仓库。
               </div>
             </div>
           </div>`
@@ -1873,7 +1875,7 @@ function render() {
   const scrollY = window.scrollY;
   app.className = '';
   app.innerHTML = shell();
-  applyTheme(document.documentElement.dataset.theme || 'graphite');
+  applyTheme(document.documentElement.dataset.theme || 'paper');
   state.lastRoute = location.hash || '#/overview';
   if (previousRoute === state.lastRoute) window.scrollTo(0, scrollY);
   document.title = `${pageTitleText(state.route)} · self-loop console`;
@@ -1933,6 +1935,7 @@ function connectStream() {
 
 function closeModal() {
   state.modal = null;
+  state.dirPicker = null;
   modalRoot.innerHTML = '';
   render();
 }
@@ -2297,11 +2300,12 @@ function showWorkerTokenModal(name, token, actionLabel = '新 token') {
   `;
 }
 
-function openProjectModal() {
+function openProjectModal(initialPath = '') {
   state.modal = 'project';
+  state.dirPicker = null;
   modalRoot.innerHTML = `
     <div class="modal-backdrop" data-backdrop="true">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div class="modal-head">
           <div>
             <div class="modal-title" id="modal-title">添加本地项目</div>
@@ -2313,13 +2317,18 @@ function openProjectModal() {
           <div class="form-grid">
             <div class="field full">
               <label for="prj-path">仓库路径</label>
-              <input class="input mono" id="prj-path" required placeholder="/absolute/path/to/project">
+              <div class="path-row">
+                <input class="input mono" id="prj-path" required autocomplete="off" value="${esc(initialPath)}" placeholder="C:\\path\\to\\project 或 /path/to/project">
+                <button class="btn" data-action="browse-dir" type="button">${icon('folder')} 浏览…</button>
+              </div>
+              <div class="field-hint">从本机目录中选择，或直接粘贴绝对路径。</div>
             </div>
             <div class="field full">
               <label for="prj-name">显示名称（可选）</label>
               <input class="input" id="prj-name" placeholder="默认使用目录名或 GitHub 仓库名">
             </div>
           </div>
+          <div id="dir-picker" class="dir-picker" role="group" aria-label="目录选择器" hidden></div>
           <div class="mode-banner" style="margin:4px 0 0">
             ${icon('shield')}
             <div>
@@ -2356,7 +2365,88 @@ function openProjectModal() {
   setTimeout(() => document.getElementById('prj-path')?.focus(), 40);
 }
 
-async function handleAction(action, id) {
+function closeDirectoryPicker() {
+  state.dirPicker = null;
+  const picker = document.getElementById('dir-picker');
+  if (!picker) return;
+  picker.hidden = true;
+  picker.innerHTML = '';
+}
+
+function renderDirectoryPicker() {
+  const root = document.getElementById('dir-picker');
+  if (!root) return;
+  const picker = state.dirPicker;
+  if (!picker) {
+    closeDirectoryPicker();
+    return;
+  }
+  root.hidden = false;
+  const listing = picker.listing;
+  const entries = (listing?.entries || []).filter((entry) => picker.showHidden || !entry.hidden);
+  const roots = picker.roots || [];
+  const crumbs = listing?.breadcrumbs || [];
+  root.innerHTML = `
+    <div class="dir-picker-head">
+      <div style="min-width:0">
+        <div class="dir-picker-title">选择项目目录</div>
+        <div class="dir-picker-path mono">${esc(listing?.path || '正在读取…')}</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" data-action="close-dir-picker" type="button">收起</button>
+    </div>
+    <div class="dir-roots">
+      ${roots.map((item) => `<button class="dir-root ${listing?.path === item.path ? 'active' : ''}" data-action="dir-goto" data-path="${esc(item.path)}" type="button">${esc(item.label)}</button>`).join('')}
+    </div>
+    <div class="dir-toolbar">
+      <button class="btn btn-sm" data-action="dir-up" data-path="${esc(listing?.parent || '')}" type="button" ${listing?.parent ? '' : 'disabled'}>${icon('arrowLeft')} 上一级</button>
+      <button class="btn btn-sm" data-action="dir-toggle-hidden" type="button">${picker.showHidden ? '隐藏隐藏目录' : '显示隐藏目录'}</button>
+      <button class="btn btn-primary btn-sm" data-action="dir-choose" type="button" ${listing ? '' : 'disabled'}>${icon('check')} 选择此目录</button>
+    </div>
+    ${crumbs.length ? `<nav class="dir-breadcrumbs" aria-label="目录路径">${crumbs
+      .map((crumb, index) => `${index ? '<span class="dir-sep">/</span>' : ''}<button class="dir-crumb" data-action="dir-goto" data-path="${esc(crumb.path)}" type="button">${esc(crumb.label)}</button>`)
+      .join('')}</nav>` : ''}
+    ${picker.loading
+      ? '<div class="dir-empty">正在读取目录…</div>'
+      : picker.error
+        ? `<div class="dir-error">${esc(picker.error)}<button class="btn btn-sm" data-action="dir-retry" type="button">重试</button></div>`
+        : entries.length
+          ? `<div class="dir-list">${entries
+            .map((entry) => `<button class="dir-row" data-action="dir-enter" data-path="${esc(entry.path)}" type="button"><span class="dir-row-icon">${icon('folder')}</span><span class="dir-row-name">${esc(entry.name)}</span><span class="dir-row-chevron">${icon('chevron')}</span></button>`)
+            .join('')}</div>`
+          : '<div class="dir-empty">没有子目录，可以直接选择当前目录。</div>'}
+    ${listing?.truncated ? `<div class="dir-note">目录过多，只显示前 ${listing.limit} 个；可直接粘贴完整路径。</div>` : ''}
+  `;
+}
+
+async function loadDirectory(target = '') {
+  const current = state.dirPicker || { roots: [], listing: null, showHidden: false };
+  state.dirPicker = { ...current, loading: true, error: null };
+  renderDirectoryPicker();
+  try {
+    if (!current.roots?.length) {
+      const info = await api('/api/fs/roots');
+      state.dirPicker.roots = info.roots || [];
+    }
+    const next = target || state.dirPicker.roots[0]?.path || '';
+    const listing = await api(`/api/fs/dirs${next ? `?path=${encodeURIComponent(next)}` : ''}`);
+    state.dirPicker = { ...state.dirPicker, listing, loading: false, error: null };
+  } catch (error) {
+    state.dirPicker = { ...state.dirPicker, loading: false, error: error.message };
+  }
+  renderDirectoryPicker();
+}
+
+function looksLikeAbsolutePath(value) {
+  return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
+async function openDirectoryPicker() {
+  const typed = document.getElementById('prj-path')?.value.trim() || '';
+  await loadDirectory(looksLikeAbsolutePath(typed) ? typed : '');
+  document.getElementById('dir-picker')?.scrollIntoView({ block: 'nearest' });
+}
+
+async function handleAction(action, id, dataset = {}) {
   try {
     if (action === 'toggle-pause') {
       await api('/api/config', {
@@ -2388,6 +2478,39 @@ async function handleAction(action, id) {
     if (action === 'inject-event') return openEventModal();
     if (action === 'add-source') return openSourceModal();
     if (action === 'add-project') return openProjectModal();
+    if (action === 'browse-dir') {
+      await openDirectoryPicker();
+      return;
+    }
+    if (action === 'close-dir-picker') {
+      closeDirectoryPicker();
+      return;
+    }
+    if (action === 'dir-up' || action === 'dir-goto' || action === 'dir-enter') {
+      if (dataset.path) await loadDirectory(dataset.path);
+      return;
+    }
+    if (action === 'dir-retry') {
+      await loadDirectory(state.dirPicker?.listing?.path || '');
+      return;
+    }
+    if (action === 'dir-toggle-hidden') {
+      if (state.dirPicker) {
+        state.dirPicker.showHidden = !state.dirPicker.showHidden;
+        renderDirectoryPicker();
+      }
+      return;
+    }
+    if (action === 'dir-choose') {
+      const path = state.dirPicker?.listing?.path;
+      if (path) {
+        const input = document.getElementById('prj-path');
+        if (input) input.value = path;
+        closeDirectoryPicker();
+        toast('已选择目录');
+      }
+      return;
+    }
     if (action === 'switch-project') {
       await api(`/api/projects/${encodeURIComponent(id)}/select`, { method: 'POST' });
       location.hash = '#/overview';
@@ -2601,7 +2724,7 @@ document.addEventListener('click', (event) => {
     handleAction(action, { filter: id.filter });
     return;
   }
-  handleAction(action, id.id || null);
+  handleAction(action, id.id || null, id);
 });
 
 document.addEventListener('keydown', (event) => {
@@ -2631,7 +2754,7 @@ document.addEventListener('change', async (event) => {
 const THEME_KEY = 'self-loop-theme';
 
 function applyTheme(name) {
-  const theme = ['graphite', 'ocean', 'plum', 'paper'].includes(name) ? name : 'graphite';
+  const theme = ['graphite', 'ocean', 'plum', 'paper'].includes(name) ? name : 'paper';
   document.documentElement.dataset.theme = theme;
   try {
     localStorage.setItem(THEME_KEY, theme);
@@ -2648,7 +2771,7 @@ window.addEventListener('hashchange', () => {
 
 async function boot() {
   try {
-    applyTheme(localStorage.getItem(THEME_KEY) || 'graphite');
+    applyTheme(localStorage.getItem(THEME_KEY) || 'paper');
     state.data = await api('/api/state');
     if (!location.hash) history.replaceState(null, '', '#/overview');
     state.route = parseRoute();

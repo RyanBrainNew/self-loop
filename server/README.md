@@ -15,11 +15,14 @@ Ticket states.
 ## Run
 
 ```bash
-# Demo mode: synthetic Router, seeded on first launch
+# Start the console; an empty registry opens demo mode on first launch
 npm run serve
 # http://127.0.0.1:4317
 
-# Project mode: read the real Router state
+# Add the first project in the web UI: Projects -> 添加项目 -> 浏览…
+# Adding it switches the running console to project mode immediately
+
+# Optional CLI shortcut for automation or CI
 npm run serve:project -- /path/to/project
 
 # Register multiple projects; switch in the Projects page or sidebar
@@ -34,6 +37,13 @@ Project mode uses a persistent registry at `~/.self-loop/projects.json`.
 without `--repo`. Added projects must be a Git repository or contain
 `.self-loop.json` / `.loop`. The API accepts a path only on an authenticated
 `POST /api/projects`, never on read routes.
+
+The browser directory picker uses authenticated `GET /api/fs/roots` and
+`GET /api/fs/dirs?path=<absolute>`. Both require the local token or the
+same-origin HttpOnly session and return directory names only; file contents are
+never read. The picker is an alternative to typing an absolute path, and a
+successful first registration promotes the running demo console to project mode
+without a restart.
 
 Options:
 
@@ -66,6 +76,8 @@ node server/index.mjs --rotate-token
   cookie derived from the token. The token itself is never put in a URL.
 - CLI: send `Authorization: Bearer <token>` on every `POST` or `PATCH`.
 - Every unsafe method rejects a missing/invalid credential with `401`.
+- `GET /api/fs/roots` and `GET /api/fs/dirs` also require the session or Bearer
+  credential because they enumerate local directory names.
 - Every API request rejects a cross-site `Origin` with `403`; this also covers
   reads and SSE. CORS is intentionally not enabled.
 - `POST /api/auth/rotate` requires the current credential, rotates the token,
@@ -90,7 +102,8 @@ substitute for user accounts, SSO, RBAC, TLS, or a public deployment. See
 - Slack `POST /hooks/slack` is signature-verified and also posts a durable
   `task` event through the Router lock boundary.
 - Demo-only actions return `409`: pause, event injection, source/worker edits,
-  config edits, answer, and approve.
+  config edits, answer, and approve. Adding a project is supported in demo mode
+  and promotes the running console to project mode.
 - The Router remains the only writer of Ticket state. The console does not
   import core scripts to mutate state directly.
 - Outbox history comes from the real `.loop/outbox.json`. Flush is explicit so
@@ -293,10 +306,10 @@ are project-mode only and reject cross-site Origins.
 ## Themes and bilingual UI
 
 The console ships four themes (Graphite, Ocean, Plum, Paper) selectable in the
-top bar and persisted in localStorage. English technical terms carry a Chinese
-short label; the Glossary page (`#/glossary`) gives a plain-language
-explanation for every term. The shell includes a skip link, `main` landmark,
-`aria-current` navigation, and labelled controls.
+top bar and persisted in localStorage. Paper is the default. English technical
+terms carry a Chinese short label; the Glossary page (`#/glossary`) gives a
+plain-language explanation for every term. The shell includes a skip link,
+`main` landmark, `aria-current` navigation, and labelled controls.
 
 Browser E2E is a dev-only dependency:
 
