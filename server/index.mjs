@@ -112,40 +112,31 @@ if (options.rotateToken) {
 }
 
 let backend;
+const backendRef = { current: null };
 let timer;
 let connectorTimer;
 let automationTimer;
 let dataFile = null;
+let demoStore = null;
 let projectStore = null;
 
-projectStore = new ProjectStore(options.projectsFile, { cwd: process.cwd() });
-if (options.repos.length) {
-  let opened = null;
-  for (const repo of options.repos) opened = projectStore.add(repo).project;
-  if (opened) projectStore.select(opened.id);
+function stopRuntimeTimers() {
+  clearInterval(timer);
+  clearInterval(connectorTimer);
+  clearInterval(automationTimer);
+  timer = null;
+  connectorTimer = null;
+  automationTimer = null;
 }
-const registeredProjects = projectStore.list();
 
-if (registeredProjects.length) {
-  if (options.reset) throw new Error('--reset only applies to demo mode');
-  if (options.out && registeredProjects.length !== 1) {
-    throw new Error('--out can only be used with a single registered project');
-  }
-  const registry = new ProjectRegistry(registeredProjects, {
-    cwd: process.cwd(),
-    outDir: options.out,
-    store: projectStore,
-    currentId: projectStore.current()?.id,
-  });
-  backend = new ProjectBackend(registry);
-
+function startProjectRuntime(registry) {
   let lastCheck = 0;
   timer = setInterval(() => {
     const now = Date.now();
     if (now - lastCheck < 800) return;
     lastCheck = now;
     try {
-      if (backend.changed()) api.broadcast();
+      if (backendRef.current.changed()) api.broadcast();
     } catch (error) {
       console.error('[watch]', error.message);
     }
@@ -164,7 +155,7 @@ if (registeredProjects.length) {
         if (Date.now() < dueAt) continue;
         jiraDue.set(entry.id, Date.now() + Math.max(1, config.pollMinutes) * 60_000);
         try {
-          const result = await backend.syncJira(entry);
+          const result = await backendRef.current.syncJira(entry);
           if (result.events?.length) api.broadcast();
           if (result.nextSyncAt) {
             const retryAt = Date.parse(result.nextSyncAt);
@@ -187,25 +178,16 @@ if (registeredProjects.length) {
   automationTimer = setInterval(async () => {
     for (const entry of registry.entries) {
       try {
-        const result = await backend.runDueAutomations(entry);
+        const result = await backendRef.current.runDueAutomations(entry);
         if (result.ran) api.broadcast();
       } catch (error) {
         console.error(`[automation] ${entry.name}: ${error.message}`);
       }
     }
   }, 30_000);
-} else {
-  if (options.repos.length) throw new Error('no project was registered');
-  dataFile = resolve(process.cwd(), options.data);
-  if (options.reset && existsSync(dataFile)) unlinkSync(dataFile);
-  const store = new Store(dataFile, { initialState: createDemoState() });
-  store.state.meta.serverStartedAt = new Date().toISOString();
-  store.state.meta.mode = 'demo';
-  if (!options.demo) store.state.meta.demo = false;
-  if (!options.tick) store.state.config.autoTick = false;
-  const engine = new RouterEngine(store);
-  backend = new DemoBackend({ store, engine });
+}
 
+function startDemoRuntime(store, engine) {
   let lastTick = 0;
   timer = setInterval(() => {
     if (!store.state.config.autoTick) return;
@@ -222,13 +204,14 @@ if (registeredProjects.length) {
   }, 250);
 
   automationTimer = setInterval(() => {
-    if (backend.mode !== 'demo') return;
+    const current = backendRef.current;
+    if (current.mode !== 'demo') return;
     const now = Date.now();
-    for (const automation of backend.store.state.automations || []) {
+    for (const automation of current.store.state.automations || []) {
       if (!automation.enabled) continue;
       if (Date.parse(automation.nextRunAt || 0) > now) continue;
       try {
-        backend.runAutomation(automation.id);
+        current.runAutomation(automation.id);
         api.broadcast();
       } catch (error) {
         console.error('[automation]', error.message);
@@ -237,9 +220,86 @@ if (registeredProjects.length) {
   }, 30_000);
 }
 
+function addFirstProject(input = {}) {
+  const { project, added } = projectStore.add(input.path, { name: input.name });
+  projectStore.select(project.id);
+  const registry = new ProjectRegistry(projectStore.list(), {
+    cwd: process.cwd(),
+    outDir: options.out,
+    store: projectStore,
+    currentId: project.id,
+  });
+  const next = new ProjectBackend(registry);
+  try {
+    demoStore?.save();
+  } catch (error) {
+    console.error('[store]', error);
+  }
+  stopRuntimeTimers();
+  backendRef.current = next;
+  startProjectRuntime(registry);
+  console.log(`[project] ${added ? 'registered' : 'opened'} ${project.path}`);
+  return {
+    project: next.projectPublic(registry.current()),
+    projects: next.projects(),
+    added,
+  };
+}
+
+function liveBackend() {
+  return new Proxy({}, {
+    get(_target, property) {
+      const current = backendRef.current;
+      const value = current[property];
+      return typeof value === 'function' ? value.bind(current) : value;
+    },
+    has(_target, property) {
+      return property in backendRef.current;
+    },
+  });
+}
+
+projectStore = new ProjectStore(options.projectsFile, { cwd: process.cwd() });
+if (options.repos.length) {
+  let opened = null;
+  for (const repo of options.repos) opened = projectStore.add(repo).project;
+  if (opened) projectStore.select(opened.id);
+}
+const registeredProjects = projectStore.list();
+
+if (registeredProjects.length) {
+  if (options.reset) throw new Error('--reset only applies to demo mode');
+  if (options.out && registeredProjects.length !== 1) {
+    throw new Error('--out can only be used with a single registered project');
+  }
+  const registry = new ProjectRegistry(registeredProjects, {
+    cwd: process.cwd(),
+    outDir: options.out,
+    store: projectStore,
+    currentId: projectStore.current()?.id,
+  });
+  backend = new ProjectBackend(registry);
+  backendRef.current = backend;
+  startProjectRuntime(registry);
+} else {
+  if (options.repos.length) throw new Error('no project was registered');
+  dataFile = resolve(process.cwd(), options.data);
+  if (options.reset && existsSync(dataFile)) unlinkSync(dataFile);
+  const store = new Store(dataFile, { initialState: createDemoState() });
+  store.state.meta.serverStartedAt = new Date().toISOString();
+  store.state.meta.mode = 'demo';
+  if (!options.demo) store.state.meta.demo = false;
+  if (!options.tick) store.state.config.autoTick = false;
+  const engine = new RouterEngine(store);
+  demoStore = store;
+  backend = new DemoBackend({ store, engine, onAddProject: addFirstProject });
+  backendRef.current = backend;
+  startDemoRuntime(store, engine);
+}
+
 const audit = new ConsoleAudit(options.auditFile);
 const api = createApi({
-  backend,
+  backend: liveBackend(),
   auth,
   audit,
   publicDir,
@@ -258,16 +318,17 @@ server.listen(options.port, options.host, () => {
   console.log('');
   console.log(`self-loop console ${VERSION}`);
   console.log(`  local   http://${options.host}:${port}`);
-  if (backend.mode === 'project') {
-    for (const project of backend.registry.entries) {
+  const current = backendRef.current;
+  if (current.mode === 'project') {
+    for (const project of current.registry.entries) {
       console.log(`  project ${project.name} · ${project.statePath}`);
     }
     console.log(`  projects ${options.projectsFile}`);
     console.log('  mode    project · multi-repo registry · writes go through router CLI');
   } else {
     console.log(`  data    ${dataFile}`);
-    console.log(`  mode    demo · ${backend.store.state.config.autoTick ? 'auto tick' : 'paused'}`);
-    console.log(`  router  ${backend.store.state.config.maxConcurrent} slots · ${backend.store.state.config.tickMs}ms tick`);
+    console.log(`  mode    demo · ${current.store.state.config.autoTick ? 'auto tick' : 'paused'}`);
+    console.log(`  router  ${current.store.state.config.maxConcurrent} slots · ${current.store.state.config.tickMs}ms tick`);
   }
   console.log(`  token   ${auth.file}`);
   console.log(`  audit   ${options.auditFile}`);
@@ -282,11 +343,10 @@ server.listen(options.port, options.host, () => {
 });
 
 function shutdown() {
-  clearInterval(timer);
-  clearInterval(connectorTimer);
-  clearInterval(automationTimer);
+  stopRuntimeTimers();
   try {
-    if (backend.mode === 'demo') backend.store.save();
+    const current = backendRef.current;
+    if (current?.mode === 'demo') current.store.save();
   } catch (error) {
     console.error('[store]', error);
   }

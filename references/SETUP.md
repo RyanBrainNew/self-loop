@@ -149,6 +149,18 @@ Report:
 Setup does not run triage, implement work, install cron, or enable an external
 scheduler. Those are separate decisions.
 
+## Console project registration
+
+Registering a repository in the local console (`Projects` → `添加项目` →
+`浏览…`) is separate from this setup flow. It only writes the console registry
+at `~/.self-loop/projects.json` and reads the project's `.loop` state. It does
+not create `.self-loop.json`, memory files, labels, or executor settings.
+
+The directory picker is a UI shortcut for choosing an absolute local path; it
+does not change the rule that work still requires a configured project. If the
+user wants the automated issue-to-PR loop enabled, run the setup conversation
+first, then register the repository in the console.
+
 ## Re-running
 
 Re-running is safe and is the normal repair/upgrade path. It only fills missing

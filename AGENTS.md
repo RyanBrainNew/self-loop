@@ -44,7 +44,9 @@ the `package.json` license field in sync.
 - The console project registry persists in `~/.self-loop/projects.json`
   (`--projects-file` / `SELF_LOOP_CONSOLE_PROJECTS`). One console instance
   serves many registered repos; it never accepts arbitrary filesystem paths
-  from the API.
+  for project state. The authenticated directory picker is the only
+  path-bearing read: it enumerates directory names, never file contents, and
+  registration still validates the selected path before adding it.
 - Router ticks only enqueue Outbox deliveries; outbound network calls happen
   in `router outbox flush`. Delivery history is durable in `.loop/outbox.json`.
 - Connectors only append normalized `task` Inbox events through the Router.

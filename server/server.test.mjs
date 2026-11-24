@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { once } from 'node:events';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -18,6 +28,7 @@ import { Store, nowIso } from './store.mjs';
 import { loadJiraCursor, syncJira } from './connectors/jira.mjs';
 
 const publicDir = fileURLToPath(new URL('./public', import.meta.url));
+const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
 function minimalState(now = Date.now()) {
   const state = createDemoState(now);
@@ -111,6 +122,33 @@ async function httpFixture(initialState = null) {
       context.cleanup();
     },
   };
+}
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = createNetServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+async function waitForHealth(base, timeout = 15_000) {
+  const deadline = Date.now() + timeout;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${base}/api/health`);
+      if (response.ok) return;
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw lastError || new Error('server did not start');
 }
 
 function writeHeaders(context, extra = {}) {
@@ -1536,7 +1574,7 @@ test('the console shell is bilingual, themeable, and exposes accessibility landm
   const context = await httpFixture();
   try {
     const html = await fetch(`${context.base}/`).then((res) => res.text());
-    assert.match(html, /<html lang="zh-CN">/);
+    assert.match(html, /<html lang="zh-CN" data-theme="paper">/);
     assert.match(html, /class="skip-link"/);
     const app = await fetch(`${context.base}/app.js`).then((res) => res.text());
     assert.match(app, /data-theme-select/);
@@ -1550,6 +1588,7 @@ test('the console shell is bilingual, themeable, and exposes accessibility landm
     assert.match(app, /Ocean · 深海/);
     assert.match(app, /Plum · 梅子/);
     assert.match(app, /Paper · 纸张/);
+    assert.match(app, /applyTheme\(localStorage.getItem\(THEME_KEY\) \|\| 'paper'\)/);
   } finally {
     await context.close();
   }
@@ -1599,5 +1638,135 @@ test('project mode registers a remote worker and completes a claimed ticket', as
     assert.equal(revoked.remoteWorkers.length, 0);
   } finally {
     await context.close();
+  }
+});
+
+test('directory browsing requires the local token and only exposes directories', async () => {
+  const context = await httpFixture();
+  const browse = join(context.dir, 'browse-root');
+  try {
+    mkdirSync(browse);
+    mkdirSync(join(browse, 'nested'));
+    writeFileSync(join(browse, 'note.txt'), 'x');
+
+    const denied = await fetch(`${context.base}/api/fs/roots`);
+    assert.equal(denied.status, 401);
+
+    const rootResponse = await fetch(`${context.base}/api/fs/roots`, {
+      headers: { Authorization: `Bearer ${context.token}` },
+    });
+    assert.equal(rootResponse.status, 200);
+    const rootBody = await rootResponse.json();
+    assert.ok(rootBody.roots.some((root) => root.kind === 'home'));
+    assert.ok(rootBody.roots.some((root) => root.kind === 'cwd'));
+
+    const listingResponse = await fetch(
+      `${context.base}/api/fs/dirs?path=${encodeURIComponent(browse)}`,
+      { headers: { Authorization: `Bearer ${context.token}` } },
+    );
+    assert.equal(listingResponse.status, 200);
+    const listing = await listingResponse.json();
+    assert.deepEqual(listing.entries.map((entry) => entry.name), ['nested']);
+
+    const relative = await fetch(`${context.base}/api/fs/dirs?path=relative`, {
+      headers: { Authorization: `Bearer ${context.token}` },
+    });
+    assert.equal(relative.status, 400);
+  } finally {
+    await context.close();
+  }
+});
+
+test('an empty registry adds its first project from the web and switches to project mode', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'self-loop-bootstrap-'));
+  const project = join(dir, 'repo');
+  mkdirSync(project);
+  writeFileSync(
+    join(project, '.self-loop.json'),
+    `${JSON.stringify({ language: 'zh-CN' }, null, 2)}\n`,
+  );
+  const projectsFile = join(dir, 'projects.json');
+  const authFile = join(dir, 'console-token');
+  const auditFile = join(dir, 'console-audit.json');
+  const dataFile = join(dir, 'demo-state.json');
+  const port = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, [
+    join(repoRoot, 'server', 'index.mjs'),
+    '--port', String(port),
+    '--projects-file', projectsFile,
+    '--auth-file', authFile,
+    '--audit-file', auditFile,
+    '--data', dataFile,
+  ], {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => { output += chunk; });
+  child.stderr.on('data', (chunk) => { output += chunk; });
+  try {
+    await waitForHealth(base);
+    const token = readFileSync(authFile, 'utf8').trim();
+
+    const before = await fetch(`${base}/api/state`).then((response) => response.json());
+    assert.equal(before.meta.mode, 'demo');
+    assert.equal(before.capabilities.projectAdd, true);
+
+    const denied = await fetch(`${base}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: project }),
+    });
+    assert.equal(denied.status, 401);
+
+    const added = await fetch(`${base}/api/projects`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ path: project, name: 'bootstrap' }),
+    });
+    const addedText = await added.text();
+    assert.equal(added.status, 201, `${addedText}\n${output}`);
+    const addedBody = JSON.parse(addedText);
+    assert.equal(addedBody.added, true);
+
+    const after = await fetch(`${base}/api/state`).then((response) => response.json());
+    assert.equal(after.meta.mode, 'project');
+    assert.equal(after.projects.items.length, 1);
+    assert.equal(after.projects.currentId, addedBody.project.id);
+    assert.equal(
+      after.projects.items[0].path,
+      realpathSync.native(project),
+    );
+
+    const stored = JSON.parse(readFileSync(projectsFile, 'utf8'));
+    assert.equal(stored.projects.length, 1);
+    assert.equal(stored.lastSelectedId, addedBody.project.id);
+
+    const listing = await fetch(
+      `${base}/api/fs/dirs?path=${encodeURIComponent(project)}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    assert.equal(listing.status, 200);
+
+    const page = await fetch(`${base}/`);
+    const session = page.headers.get('set-cookie')?.split(';')[0];
+    assert.ok(session, 'the console page should issue a session cookie');
+    const cookieRoots = await fetch(`${base}/api/fs/roots`, {
+      headers: { Cookie: session },
+    });
+    assert.equal(cookieRoots.status, 200);
+  } finally {
+    child.kill('SIGTERM');
+    await Promise.race([
+      once(child, 'exit'),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+    if (child.exitCode === null) child.kill('SIGKILL');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

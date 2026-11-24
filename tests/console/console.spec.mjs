@@ -56,6 +56,78 @@ test.describe('self-loop console', () => {
     await expect(theme).toHaveValue('ocean');
   });
 
+  test('project directory picker fills and submits an absolute path', async ({ page }) => {
+    const work = '/tmp/self-loop-e2e';
+    await page.route('**/api/fs/roots', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        roots: [{ path: work, label: 'Working directory · 当前目录', kind: 'cwd' }],
+        separator: '/',
+      }),
+    }));
+    await page.route(/\/api\/fs\/dirs/, async (route) => {
+      const target = new URL(route.request().url()).searchParams.get('path') || work;
+      const body = target.endsWith('/repo-a')
+        ? {
+            path: target,
+            parent: work,
+            breadcrumbs: [
+              { label: '/', path: '/' },
+              { label: 'self-loop-e2e', path: work },
+              { label: 'repo-a', path: target },
+            ],
+            entries: [],
+            truncated: false,
+            limit: 400,
+          }
+        : {
+            path: work,
+            parent: '/tmp',
+            breadcrumbs: [
+              { label: '/', path: '/' },
+              { label: 'tmp', path: '/tmp' },
+              { label: 'self-loop-e2e', path: work },
+            ],
+            entries: [
+              { name: 'repo-a', path: `${work}/repo-a`, hidden: false },
+              { name: '.git', path: `${work}/.git`, hidden: true },
+            ],
+            truncated: false,
+            limit: 400,
+          };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+    let posted = null;
+    await page.route('**/api/projects', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      posted = JSON.parse(route.request().postData() || '{}');
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, project: { id: 'prj_e2e' } }),
+      });
+    });
+
+    await page.goto('/#/projects');
+    await page.getByRole('button', { name: /添加项目/ }).click();
+    await page.getByRole('button', { name: /浏览/ }).click();
+    await expect(page.getByRole('button', { name: /repo-a/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /\.git/ })).toHaveCount(0);
+
+    await page.getByRole('button', { name: /repo-a/ }).click();
+    await expect(page.locator('#dir-picker')).toContainText('repo-a');
+    await page.getByRole('button', { name: /选择此目录/ }).click();
+    await expect(page.locator('#prj-path')).toHaveValue(`${work}/repo-a`);
+
+    await page.getByRole('button', { name: /注册并切换/ }).click();
+    await expect.poll(() => posted?.path).toBe(`${work}/repo-a`);
+  });
+
   test('project switching changes the active repository', async ({ page }) => {
     await page.goto('/#/projects');
     await expect(page.locator('.project-card')).toHaveCount(2);

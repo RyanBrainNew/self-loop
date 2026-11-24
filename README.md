@@ -37,11 +37,14 @@ Ticket → Attempt → Verifier → Outbox 的链路可视化，并允许人工�
 重跑、取消、验收和重投。
 
 ```bash
-# 演示模式：合成 Router，第一次启动就有完整数据
+# 启动控制台；空注册表时进入 demo 模式，第一次启动就有完整数据
 npm run serve
 # http://127.0.0.1:4317
 
-# 项目模式：注册并读取目标仓库真实的 .loop/state.json
+# 在 Projects 页面点击“添加项目”，用目录选择器注册本地仓库
+# 注册后立即切换到 project 模式，并持久化到 ~/.self-loop/projects.json
+
+# 可选：自动化或 CI 仍可用 CLI 一次注册多个项目
 npm run serve:project -- /path/to/project
 
 # 继续注册多个项目；之后重启不再需要重复传 --repo
@@ -55,7 +58,11 @@ npm run serve
 不复制 Ticket 状态：控制台只读 `.loop/state.json`、`.loop/inbox.json` 与
 `.loop/outbox.json`，写操作通过同一个 `scripts/router.mjs` 锁边界执行，Router
 仍是 Ticket 状态的唯一写入者。项目注册表默认在
-`~/.self-loop/projects.json`，可在 `Projects` 页面添加、移除和切换仓库。
+`~/.self-loop/projects.json`，可在 `Projects` 页面通过目录选择器添加、移除和
+切换仓库。`--repo` 只是 CLI/CI 快捷方式，不是使用控制台的必经入口。
+
+目录选择器通过 `GET /api/fs/roots` 和 `GET /api/fs/dirs` 读取本机目录；两个
+接口都要求本地 token 或同源 HttpOnly 会话，只返回目录名，不读取文件内容。
 
 控制台默认只绑定 `127.0.0.1`。首次启动会在
 `~/.self-loop/console-token` 生成本地 write token；浏览器通过同源 HttpOnly
@@ -65,7 +72,8 @@ npm run serve
 控制台默认提供中英文对照：所有英文技术词都带中文短注，`Glossary / 术语表`
 页面给出完整解释；非研发同学可以从总览直接看懂 Source → Inbox → Router →
 Worker → Verifier → Outbox。内置 `Graphite / 石墨`、`Ocean / 深海`、
-`Plum / 梅子`、`Paper / 纸张` 四套主题，右上角可切换并记住选择。
+`Plum / 梅子`、`Paper / 纸张` 四套主题，默认使用纸感页面（Paper），
+右上角可切换并记住选择。
 
 连接器配置、事件注入、Ticket 生命周期、真实 Verifier 证据和 Outbox 投递都是
 真实的；GitHub / Slack webhook 原始报文验签、delivery 去重、Slack `/loop`

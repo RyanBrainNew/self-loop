@@ -8,6 +8,7 @@ import {
   parseSlackBody,
   verifySlackSignature,
 } from './connectors/slack.mjs';
+import { listDirectories, listRoots } from './fs-browse.mjs';
 import { metricsText, observabilitySummary } from './observability.mjs';
 
 const MIME = {
@@ -647,6 +648,14 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
       }
     }
 
+    if (method === 'GET' && (path === '/api/fs/roots' || path === '/api/fs/dirs')) {
+      authorization = auth.authorize(req);
+      if (!authorization.ok) {
+        record(req, null, 'auth.rejected', `${method} ${path}`, false);
+        return sendJson(res, authorization.status || 401, { error: authorization.reason });
+      }
+    }
+
     if (path === '/api/health' && method === 'GET') {
       const projects = backend.projects();
       return sendJson(res, 200, {
@@ -672,6 +681,15 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
 
     if (path === '/api/state' && method === 'GET') {
       return sendJson(res, 200, publicSnapshot());
+    }
+
+    if (path === '/api/fs/roots' && method === 'GET') {
+      return sendJson(res, 200, listRoots());
+    }
+
+    if (path === '/api/fs/dirs' && method === 'GET') {
+      const directory = await listDirectories(url.searchParams.get('path') || undefined);
+      return sendJson(res, 200, directory);
     }
 
     if (path === '/api/overview' && method === 'GET') {
