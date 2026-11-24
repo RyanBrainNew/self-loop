@@ -37,11 +37,16 @@ Date: 2026-11-23
 
 ```text
 npm test
-108 tests passed (Node 24 local, Node 20 compatible CI matrix)
+115 tests passed (Node 24 local, Node 20 compatible CI matrix)
+
+npm run test:e2e:console
+15 Playwright tests passed (Chromium, WCAG 2 A/AA axe scan)
 ```
 
 The server suite covers the Observability summary, audit filters, GitHub review
 comments, project-mode webhook routing, local auth, and the bilingual/themeable
 shell. The core suite covers connector task acceptance, the Verifier
 `commandPrefix`, automations, remote workers, durable Outbox, and SQLite
-concurrency.
+concurrency. The browser suite fills a two-project fixture, walks every primary
+route, scans WCAG 2 A/AA violations with axe, verifies theme persistence, project
+switching, audit filtering, and the bilingual glossary.

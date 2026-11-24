@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0
+
+- Added Playwright + axe browser E2E for every primary console route,
+  theme persistence, project switching, audit filtering, and the glossary.
+- Added the browser E2E CI job and fixed CSP font preconnect, focusable code
+  blocks, and WCAG contrast issues found by axe.
+- Added a live Orca adapter probe that creates, lists, reads, and removes a
+  disabled automation without launching an agent.
+- Added a manual `workflow_dispatch` live executor workflow for Codex/Claude
+  evidence collection.
+- Added the first hosted-control-plane contract: tenant/project RBAC,
+  trusted-proxy identity parsing, PostgreSQL schema, idempotency constraints,
+  indexes, and RLS policies.
+- Added dependency-free OIDC discovery, PKCE, authorization-code exchange, and
+  RS256/ES256 ID Token verification against JWKS.
+
 ## 0.5.0
 
 - Added cron + timezone schedules, edit/delete/history APIs and UI for automations.

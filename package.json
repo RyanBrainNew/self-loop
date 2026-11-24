@@ -1,6 +1,6 @@
 {
   "name": "self-loop",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "Project-agnostic issue and retrospective loop skill",
   "license": "Apache-2.0",
@@ -10,6 +10,8 @@
   },
   "scripts": {
     "test": "node --test",
+    "test:e2e:console": "playwright test -c tests/console/playwright.config.mjs",
+    "test:e2e:orca": "node adapters/orca/e2e.mjs",
     "test:skill": "node --test scripts/self-loop.test.mjs",
     "test:server": "node --test server/server.test.mjs",
     "test:e2e:codex": "node scripts/e2e-executor.mjs --adapter codex",
@@ -23,5 +25,9 @@
     "backup": "node scripts/backup.mjs",
     "restore": "node scripts/backup.mjs --restore",
     "release:check": "node scripts/release-check.mjs"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.65.1"
   }
 }

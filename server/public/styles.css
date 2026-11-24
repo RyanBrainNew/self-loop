@@ -16,6 +16,7 @@
   --amber-soft: rgba(245, 158, 11, 0.12);
   --red: #ef4444;
   --red-soft: rgba(239, 68, 68, 0.12);
+  --danger-ink: #fecaca;
   --blue: #38bdf8;
   --blue-soft: rgba(56, 189, 248, 0.12);
   --purple: #a78bfa;
@@ -59,6 +60,7 @@
   --amber-soft: rgba(251, 191, 36, 0.12);
   --red: #fb7185;
   --red-soft: rgba(251, 113, 133, 0.12);
+  --danger-ink: #fecdd3;
   --blue: #7dd3fc;
   --blue-soft: rgba(125, 211, 252, 0.13);
   --purple: #c4b5fd;
@@ -94,6 +96,7 @@
   --green: #4ade80;
   --amber: #fbbf24;
   --red: #fb7185;
+  --danger-ink: #fecdd3;
   --blue: #93c5fd;
   --purple: #d8b4fe;
   --cyan: #67e8f9;
@@ -129,6 +132,7 @@
   --amber-soft: rgba(180, 83, 9, 0.1);
   --red: #b91c1c;
   --red-soft: rgba(185, 28, 28, 0.09);
+  --danger-ink: #991b1b;
   --blue: #0369a1;
   --blue-soft: rgba(3, 105, 161, 0.09);
   --purple: #6d28d9;
@@ -634,7 +638,7 @@ a {
 .btn-danger {
   background: var(--red-soft);
   border-color: rgba(239, 68, 68, 0.35);
-  color: var(--red);
+  color: var(--danger-ink);
 }
 
 .btn-sm {
@@ -1968,8 +1972,9 @@ textarea {
 
 .badge .term-zh {
   color: currentColor;
-  opacity: 0.72;
+  opacity: 1;
   font-size: 0.82em;
+  font-weight: 500;
 }
 
 .nav-zh {

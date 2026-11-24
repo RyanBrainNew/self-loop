@@ -884,7 +884,7 @@ function observabilityView() {
             <div><div class="card-title">Prometheus · 指标出口</div><div class="card-sub">可直接接 Grafana、VictoriaMetrics 或云监控</div></div>
             <a class="badge badge-cyan" href="/metrics" target="_blank" rel="noreferrer">/metrics</a>
           </div>
-          <div class="code metrics-snippet">curl -s http://127.0.0.1:4317/metrics
+          <div class="code metrics-snippet" tabindex="0" aria-label="Prometheus metrics example">curl -s http://127.0.0.1:4317/metrics
 
 # HELP self_loop_tickets Tickets by Router state
 self_loop_tickets{state="blocked"} ${ticketStates.blocked || 0}

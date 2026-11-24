@@ -252,7 +252,7 @@ export function createApi({ backend, auth, audit, publicDir, version = '0.1.0' }
     if (type.startsWith('text/html')) {
       headers['Set-Cookie'] = auth.sessionCookie();
       headers['Content-Security-Policy'] =
-        "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'";
+        "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; base-uri 'none'; frame-ancestors 'none'";
     }
     res.writeHead(200, {
       'Content-Type': type,

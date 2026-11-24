@@ -14,7 +14,7 @@ import { RouterEngine } from './router.mjs';
 import { createDemoState } from './seed.mjs';
 import { Store } from './store.mjs';
 
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(here, 'public');
 

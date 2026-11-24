@@ -158,6 +158,10 @@ MVP 中以下能力是真实的：
 - Prometheus `/metrics`、`/api/observability`、备份/恢复；
 - Prometheus 告警规则、systemd tick/backup 示例和 GitHub Release 自动化；
 - GitHub PR 评论 `/loop` / `@self-loop` 生成带 PR 链接的 follow-up Ticket；
+- Playwright 浏览器 E2E、axe WCAG 2 A/AA 扫描和主题/项目切换测试；
+- Orca adapter 真实 create/list/show/remove automation 探针；
+- hosted RBAC 契约、OIDC discovery/PKCE/JWT 校验、trusted-proxy header 和
+  PostgreSQL/RLS schema；
 - 四套主题和中英文对照界面（Glossary 术语表）。
 
 以下能力目前是模拟的：
@@ -165,8 +169,8 @@ MVP 中以下能力是真实的：
 - demo 模式的 Worker 执行是定时器，不是 agent；
 - demo 模式的 Verifier 证据是合成的；
 - Jira / Slack 的托管 OAuth 安装、secret rotation 和多租户凭据存储；
-- hosted 身份、RBAC、PostgreSQL 和多租户隔离。
-- Claude Code 的端到端验收运行（本机未安装；Codex 已验证）。
+- hosted 登录、PostgreSQL adapter 和运行时多租户隔离（当前只有 RBAC/schema 契约）。
+- Claude Code 的端到端验收运行（本机未安装；Codex 已验证，Orca 调度器已验证）。
 
 ## 产品边界
 
@@ -188,8 +192,11 @@ MVP 中以下能力是真实的：
 - [Durable Outbox ADR](adr/0012-durable-outbox.md)
 - [Hosted multi-tenant ADR](adr/0013-hosted-multi-tenant-architecture.md)
 - [Hosted OAuth 说明](HOSTED-OAUTH.md)
+- [Hosted phase 1 契约](HOSTED-PHASE-1.md)
 - [Codex E2E 证据](EVIDENCE-CODEX-E2E.md)
 - [Console QA 证据](EVIDENCE-CONSOLE-QA.md)
+- [Executor E2E 状态](EVIDENCE-EXECUTORS.md)
+- [Orca adapter live 证据](EVIDENCE-ORCA-E2E.md)
 - [Optional SQLite store ADR](adr/0014-optional-sqlite-store.md)
 - [Connector ingress ADR](adr/0015-connector-ingress.md)
 - [Automations and remote Workers ADR](adr/0016-automations-and-remote-workers.md)

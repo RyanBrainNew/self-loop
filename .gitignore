@@ -4,4 +4,8 @@ node_modules/
 *.log
 .DS_Store
 .hallmark/
+test-results/
+playwright-report/
+blob-report/
+.playwright/
 

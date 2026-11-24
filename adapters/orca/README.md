@@ -59,7 +59,13 @@ the Router from events instead of the hourly trigger, use `router post` plus
 orca automations list --json
 orca automations run <automationId> --json
 orca automations edit <automationId> --enabled --json
+npm run test:e2e:orca
 ```
+
+`test:e2e:orca` is a live, no-agent probe: it creates a uniquely named disabled
+automation in the current Orca worktree, verifies it through create/list/show,
+and removes it in a `finally` block. Evidence is recorded in
+`docs/EVIDENCE-ORCA-E2E.md`.
 
 ## Optional Router executor adapter
 
