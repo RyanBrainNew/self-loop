@@ -112,6 +112,10 @@ Verifier；需要先登录对应 CLI。详见 `server/README.md`、
 [`docs/EVIDENCE-EXECUTORS.md`](docs/EVIDENCE-EXECUTORS.md)。
 托管版的 Slack/Jira OAuth 与本机凭据的区别见
 [`docs/HOSTED-OAUTH.md`](docs/HOSTED-OAUTH.md)。
+托管控制面已提供独立的 OIDC 登录、PKCE、服务端会话、租户/项目 RBAC、
+PostgreSQL 适配器和 RLS 迁移，入口是 `npm run serve:hosted`；它要求真实的
+OIDC Provider 和 `DATABASE_URL`，与本机版 `npm run serve` 完全分离。当前
+状态与剩余边界见 [`docs/HOSTED-PHASE-1.md`](docs/HOSTED-PHASE-1.md)。
 
 运维能力：`router automations` 管理定时自动化；`router workers` +
 `router claim/complete` 接入远程执行器；`GET /metrics` 与

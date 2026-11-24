@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0
+
+- Added the first runnable hosted control-plane surface: OIDC login with PKCE,
+  one-time login transactions, HttpOnly server-side sessions, logout, and
+  `/api/me`.
+- Added default-deny tenant/project routes with route-level RBAC and explicit
+  tenant scoping for every hosted project read.
+- Added PostgreSQL session, login-transaction, user, membership, project-role,
+  project, and Ticket adapters, including `self_loop.tenant_id` and
+  `self_loop.user_id` transaction variables, `FOR UPDATE SKIP LOCKED` claims,
+  and optimistic version predicates.
+- Added tenant-scoped hosted Ticket list/detail read routes with `ticket:read`
+  authorization.
+- Added the fail-fast `npm run serve:hosted` entry point, optional `pg`
+  dependency, and hosted environment validation.
+- Added hosted session, auth, HTTP, PostgreSQL, and startup configuration
+  tests (19 passing).
+
 ## 0.6.0
 
 - Added Playwright + axe browser E2E for every primary console route,
