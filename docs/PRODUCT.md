@@ -110,28 +110,35 @@ Outbox 负责把执行结果送回外部系统，例如：
 
 ### local console 与 hosted console 的差异
 
-| 维度 | local console（当前） | hosted console（未实现） |
+| 维度 | local console（当前） | hosted control plane（当前 API / 浏览器控制台待做） |
 | --- | --- | --- |
-| 身份 | 本地 token + 同源会话 | 用户、团队、SSO |
-| 权限 | 本机即管理员 | RBAC、项目级权限 |
-| 状态 | 目标仓库 `.loop` 或 demo JSON | 数据库、迁移、多进程锁 |
-| 项目 | 本地持久化注册表，可在 UI 添加/移除/切换 | 组织 / 项目注册与隔离 |
-| 网络 | 默认 loopback，禁止直接公网暴露 | TLS、反向代理、限流 |
-| 审计 | 本地控制台审计 + Router 状态 | 集中审计、保留策略、告警 |
-| Outbox | 持久化 `.loop/outbox.json`，GitHub/Jira/Slack 投递与死信 | 托管密钥、多租户限流与集中重放 |
+| 身份 | 本地 token + 同源会话 | OIDC 登录、PKCE、服务端 HttpOnly 会话 |
+| 权限 | 本机即管理员 | 租户/项目 RBAC，默认拒绝 |
+| 状态 | 目标仓库 `.loop` 或 demo JSON | PostgreSQL、RLS、乐观版本与行锁 |
+| 项目 | 本地持久化注册表，可在 UI 添加/移除/切换 | 租户/项目只读 API，浏览器控制台待做 |
+| 网络 | 默认 loopback，禁止直接公网暴露 | TLS/反向代理、Origin 校验、ingress 限流 |
+| 审计 | 本地控制台审计 + Router 状态 | 集中审计/告警仍待做 |
+| Outbox | 持久化 `.loop/outbox.json`，GitHub/Jira/Slack 投递与死信 | 托管连接器凭据与 GitHub/Slack ingress 已实现；Outbox 待做 |
 
-hosted 版本不是把当前 server 直接放到公网，而是新的数据模型和权限模型，需要
-独立 ADR。
+hosted 版本不是把当前 server 直接放到公网，而是新的数据模型和权限模型。当前
+已经实现 API 运行时（`npm run serve:hosted`），但浏览器控制台、托管 Worker 和
+连接器 OAuth 安装仍未完成。
 
 ### 后续：hosted / 团队版
 
-需要新增独立的架构决策，至少包括：
+已经完成：
 
 - 数据库、迁移和多进程锁；
 - 用户、团队、项目和 RBAC；
-- 连接器 OAuth、webhook 密钥托管与轮换；
-- 多租户隔离、审计和可观测性；
-- 托管 Worker 或远程 Worker 注册协议。
+- 租户级加密连接器凭据、轮换和撤销；
+- GitHub/Slack webhook 验签、租户路由和 ingress 限流。
+
+仍需继续：
+
+- 连接器 OAuth 授权/安装与自动 refresh；
+- 多租户集中审计、指标、Tracing 和告警；
+- 托管 Worker 执行与本地 `.loop` 导入/导出；
+- hosted 浏览器控制台。
 
 ## 真实能力与模拟能力
 
@@ -162,14 +169,21 @@ MVP 中以下能力是真实的：
 - Orca adapter 真实 create/list/show/remove automation 探针；
 - hosted RBAC 契约、OIDC discovery/PKCE/JWT 校验、trusted-proxy header 和
   PostgreSQL/RLS schema；
+- hosted OIDC 登录/回调/退出、服务端会话、租户/项目/Ticket 只读 API；
+- PostgreSQL session/user/project/Ticket adapter、`FOR UPDATE SKIP LOCKED`
+  和版本谓词；
+- 租户级 AES-256-GCM 连接器凭据、轮换/撤销；
+- GitHub/Slack hosted webhook 验签、绑定路由、幂等去重和固定窗口限流；
 - 四套主题和中英文对照界面（Glossary 术语表）。
 
 以下能力目前是模拟的：
 
 - demo 模式的 Worker 执行是定时器，不是 agent；
 - demo 模式的 Verifier 证据是合成的；
-- Jira / Slack 的托管 OAuth 安装、secret rotation 和多租户凭据存储；
-- hosted 登录、PostgreSQL adapter 和运行时多租户隔离（当前只有 RBAC/schema 契约）。
+- 连接器 OAuth 授权/安装与自动 refresh（当前由管理员写入/轮换加密凭据）；
+- hosted Jira 轮询/webhook、托管 Worker、hosted 浏览器控制台；
+- KMS/Secret Manager 和 Attempt 产物对象存储；
+- hosted 集中审计、指标、Tracing 和告警。
 - Claude Code 的端到端验收运行（本机未安装；Codex 已验证，Orca 调度器已验证）。
 
 ## 产品边界

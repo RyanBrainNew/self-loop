@@ -50,3 +50,8 @@
 当前 MVP 已经能完成真实的 Slack 验签、`/loop`、Jira 增量同步和 Outbox 写回；它只是采用“本机凭据”的方式。
 
 Hosted OAuth 属于 ADR 0013 里的托管版能力，需要 PostgreSQL、RBAC、密钥管理、OAuth 回调、租户隔离和审计一起设计。它不会阻塞本机版继续使用。
+
+当前 hosted 运行时已经具备租户级 AES-256-GCM 凭据存储、轮换、撤销，以及
+GitHub/Slack webhook 验签和路由；尚未实现的是“用户在网页里点一下完成
+Slack/Jira OAuth 安装”以及自动 refresh token。管理员目前仍通过
+`/api/tenants/:tenant/projects/:project/credentials` 写入加密凭据。

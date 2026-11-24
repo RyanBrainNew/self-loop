@@ -327,10 +327,20 @@ opt-in service rather than a flag on `npm run serve`:
   and ticket adapters. Every tenant read runs inside a transaction that sets
   `self_loop.tenant_id`; Ticket claims use `FOR UPDATE SKIP LOCKED` and state
   updates require an expected `version`.
+- `server/hosted-secrets.mjs` stores connector credentials with AES-256-GCM,
+  tenant/project/provider/credential AAD, metadata-only read APIs, rotation,
+  and revocation. Plaintext is decrypted only at runtime.
+- `server/hosted-ingress.mjs` implements GitHub and Slack webhook ingress:
+  raw-body signature verification, tenant binding resolution, per-binding rate
+  limits, idempotent Inbox insertion, and normalized task events.
 - `server/hosted-index.mjs` is the fail-fast entry point. It requires a real
-  OIDC provider and `DATABASE_URL`.
+  OIDC provider and `DATABASE_URL`. Set `HOSTED_SECRET_KEY` to enable connector
+  credentials and webhook ingress.
 - `migrations/001_hosted.sql` defines PostgreSQL tables, idempotency
   constraints, optimistic versions, indexes, and tenant-isolation RLS policies.
+- `migrations/002_hosted_connectors.sql` adds encrypted credential columns,
+  connector bindings, ingress rate limits, and the controlled webhook binding
+  resolver.
 
 ```bash
 npm run serve:hosted
@@ -369,12 +379,14 @@ and the remaining hosted backlog.
 - Demo Verifier evidence is synthetic; project mode surfaces real verifier
   evidence when the Router has written it.
 - Demo connector cards and their event feed remain synthetic.
-- Jira polling and Slack webhook handlers are implemented, but hosted OAuth app
-  installation, secret rotation, and multi-tenant credential storage are not.
+- Local Jira polling and Slack handlers are implemented. Hosted connectors now
+  store encrypted credentials with rotation/revocation and accept GitHub/Slack
+  webhooks, but provider OAuth installation/refresh and hosted Jira ingress are
+  not implemented.
 - SQLite is optional and single-machine. The default JSON store remains the
-  compatibility path. PostgreSQL adapters, OIDC sessions, and tenant RBAC exist
-  as a separate hosted surface, but there is no hosted browser console, tenant
-  OAuth installation, or real-database CI job yet.
+  compatibility path. PostgreSQL adapters, OIDC sessions, tenant RBAC, and
+  connector ingress exist as a separate hosted surface, but there is no hosted
+  browser console, hosted Worker, or real-database CI job yet.
 
 ## Design boundaries
 
