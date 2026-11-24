@@ -310,16 +310,36 @@ It starts a two-project fixture, walks every primary route, runs axe WCAG 2
 A/AA checks, and verifies theme persistence, project switching, audit filters,
 and the glossary. See `tests/console/`.
 
-## Hosted control-plane contract
+## Hosted control plane
 
-The local console is still local-first. `server/hosted-rbac.mjs` defines the
-default-deny tenant/project role matrix for the future hosted service, and
-`server/hosted-oidc.mjs` provides discovery, PKCE, code exchange, and
-RS256/ES256 ID Token/JWKS validation. `migrations/001_hosted.sql` defines
-PostgreSQL tables, idempotency constraints,
-optimistic versions, indexes, and tenant-isolation RLS policies. See
-[`docs/HOSTED-PHASE-1.md`](../docs/HOSTED-PHASE-1.md) for what is implemented
-versus still deferred.
+The local console is still local-first. The hosted surface is a separate,
+opt-in service rather than a flag on `npm run serve`:
+
+- `server/hosted-rbac.mjs` defines the default-deny tenant/project role matrix.
+- `server/hosted-oidc.mjs` provides discovery, PKCE, code exchange, and
+  RS256/ES256 ID Token/JWKS validation.
+- `server/hosted-auth.mjs` owns one-time login transactions, user upsert, and
+  opaque server-side sessions.
+- `server/hosted-http.mjs` exposes `/auth/login`, `/auth/callback`,
+  `/auth/logout`, `/api/me`, `/api/tenants`, project reads, and tenant-scoped
+  Ticket list/detail reads.
+- `server/hosted-pg.mjs` implements PostgreSQL session, login, user, project,
+  and ticket adapters. Every tenant read runs inside a transaction that sets
+  `self_loop.tenant_id`; Ticket claims use `FOR UPDATE SKIP LOCKED` and state
+  updates require an expected `version`.
+- `server/hosted-index.mjs` is the fail-fast entry point. It requires a real
+  OIDC provider and `DATABASE_URL`.
+- `migrations/001_hosted.sql` defines PostgreSQL tables, idempotency
+  constraints, optimistic versions, indexes, and tenant-isolation RLS policies.
+
+```bash
+npm run serve:hosted
+```
+
+`pg` is an optional dependency; the local console, core scripts, and CI test
+job remain dependency-free. See
+[`docs/HOSTED-PHASE-1.md`](../docs/HOSTED-PHASE-1.md) for environment variables
+and the remaining hosted backlog.
 
 ## What is real
 
@@ -352,8 +372,9 @@ versus still deferred.
 - Jira polling and Slack webhook handlers are implemented, but hosted OAuth app
   installation, secret rotation, and multi-tenant credential storage are not.
 - SQLite is optional and single-machine. The default JSON store remains the
-  compatibility path; there is no PostgreSQL, multi-tenancy, SSO, RBAC, or
-  hosted deployment.
+  compatibility path. PostgreSQL adapters, OIDC sessions, and tenant RBAC exist
+  as a separate hosted surface, but there is no hosted browser console, tenant
+  OAuth installation, or real-database CI job yet.
 
 ## Design boundaries
 

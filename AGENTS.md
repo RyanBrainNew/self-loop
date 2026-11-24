@@ -20,9 +20,9 @@ the `package.json` license field in sync.
 - `server/` - local-first Router console: HTTP API, demo seed, project-state
   adapter, persistent multi-repo registry (`project-store.mjs`), local write
   auth, Slack/Jira connector adapters, observability, and the dependency-free
-  bilingual web UI. `hosted-rbac.mjs` and `hosted-oidc.mjs` are the tested
-  hosted authorization/OIDC contracts; `migrations/` contains the
-  PostgreSQL/RLS schema.
+  bilingual web UI. `hosted-rbac.mjs`, `hosted-oidc.mjs`, `hosted-auth.mjs`,
+  `hosted-http.mjs`, `hosted-pg.mjs`, and `hosted-index.mjs` are the separate
+  hosted OIDC/RBAC/PostgreSQL surface; `migrations/` contains the RLS schema.
 - `site/` - dependency-free static landing page deployed through GitHub Pages.
 - `docs/` and `GLOSSARY.md` - accepted design decisions and shared vocabulary.
 - `tests/console/` - Playwright browser E2E and axe accessibility checks.
@@ -57,10 +57,15 @@ the `package.json` license field in sync.
   project by accident.
 - `storage.backend` is `json` by default. The optional `sqlite` backend uses
   `node:sqlite`, keeps JSON as a mirror, and enforces unique event ids and
-  Outbox idempotency keys. Hosted PostgreSQL remains ADR 0013.
+  Outbox idempotency keys. The hosted PostgreSQL adapters are separate from
+  these local stores and require `DATABASE_URL` plus the optional `pg` package.
 - Hosted authorization is default-deny. `server/hosted-rbac.mjs` is the tested
   role contract; hosted queries must include `tenant_id` and set the RLS
   transaction variable. The local write token is never a hosted identity.
+  Hosted login uses one-time state/nonce transactions and HttpOnly sessions;
+  project and ticket routes resolve membership before reading the database.
+  Hosted Ticket claims use `FOR UPDATE SKIP LOCKED` and version predicates;
+  hosted HTTP is read-only in this phase and never writes Ticket state.
 - Scheduled automations only append `task` Inbox events on a due tick. They do
   not bypass Task Card, acceptance, lease, Verifier, or human gates.
 - Remote worker tokens are returned once and stored only as SHA-256 hashes in
@@ -100,6 +105,7 @@ node --test scripts/sqlite-store.test.mjs
 node --test server/server.test.mjs
 npm run serve
 npm run serve:project -- /path/to/project
+npm run serve:hosted
 npm run migrate:sqlite -- --repo /path/to/project --dry-run
 npm run test:e2e:codex
 npm run test:e2e:console

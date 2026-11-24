@@ -161,16 +161,41 @@ CREATE TABLE audit_log (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE hosted_sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  identity JSONB NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE login_transactions (
+  token_hash TEXT PRIMARY KEY,
+  state_hash TEXT NOT NULL UNIQUE,
+  nonce TEXT NOT NULL,
+  code_verifier TEXT NOT NULL,
+  return_to TEXT NOT NULL DEFAULT '/',
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX events_pending_idx
   ON events (tenant_id, project_id, received_at)
   WHERE status = 'pending';
 CREATE INDEX tickets_state_idx
   ON tickets (tenant_id, project_id, state, updated_at);
+CREATE INDEX tickets_claim_idx
+  ON tickets (tenant_id, project_id, updated_at)
+  WHERE state = 'queued';
 CREATE INDEX deliveries_due_idx
   ON deliveries (tenant_id, project_id, next_attempt_at)
   WHERE state IN ('pending', 'failed');
 CREATE INDEX audit_tenant_time_idx
   ON audit_log (tenant_id, created_at DESC);
+CREATE INDEX hosted_sessions_expiry_idx
+  ON hosted_sessions (expires_at);
+CREATE INDEX login_transactions_expiry_idx
+  ON login_transactions (expires_at);
 
 -- Every hosted request sets `self_loop.tenant_id` inside its transaction.
 -- Application code must also add an explicit tenant predicate; RLS is defense
@@ -185,6 +210,7 @@ ALTER TABLE connector_secrets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE deliveries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE workers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memberships ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant_isolation ON projects
   USING (tenant_id = current_setting('self_loop.tenant_id', true)::uuid)
@@ -216,3 +242,9 @@ CREATE POLICY tenant_isolation ON workers
 CREATE POLICY tenant_isolation ON audit_log
   USING (tenant_id = current_setting('self_loop.tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('self_loop.tenant_id', true)::uuid);
+CREATE POLICY membership_self ON memberships
+  USING (user_id = current_setting('self_loop.user_id', true)::uuid)
+  WITH CHECK (user_id = current_setting('self_loop.user_id', true)::uuid);
+CREATE POLICY project_membership_self ON project_memberships
+  USING (user_id = current_setting('self_loop.user_id', true)::uuid)
+  WITH CHECK (user_id = current_setting('self_loop.user_id', true)::uuid);
